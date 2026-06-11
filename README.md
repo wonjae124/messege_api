@@ -36,96 +36,110 @@ graph TD
 
 ### 3.1 알림 생성 및 Kafka 발행 흐름 (POST /notifications)
 
+#### ✅ 성공 케이스 (최초 요청)
+
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client as 클라이언트
     participant Controller as AlarmController
     participant Service as AlarmService
-    participant Redis as Redis<br/>(멱등성 캐시)
-    participant DB as H2 DB<br/>(AlarmRepository)
-    participant Kafka as Kafka Broker<br/>(alarm-jobs)
+    participant Redis as Redis
+    participant DB as H2 DB
+    participant Kafka as Kafka Broker
 
-    Client->>+Controller: POST /notifications<br/>[Idempotency-Key 헤더 + Body]
-    Controller->>Controller: Idempotency-Key 파싱<br/>및 senderId 추출
+    Client->>+Controller: POST /notifications
     Controller->>+Service: createAlarm(CreateAlarmCommand)
-
-    Service->>+Redis: SETNX idem:{senderId}{uuid} → "PENDING"<br/>(TTL 5분)
-    alt 이미 존재하는 키 (중복 요청)
-        Redis-->>Service: false (이미 존재)
-        Service-->>Controller: 409 CONFLICT 예외 발생
-        Controller-->>Client: HTTP 409 Conflict
-    else 최초 요청
-        Redis-->>-Service: true (신규 등록)
-        Service->>Service: Alarm.create() 정적 팩토리<br/>→ 도메인 유효성 검증 (name not blank)
-        Service->>+DB: alarmRepositoryPort.save(alarm)<br/>[status: PENDING]
-        DB-->>-Service: savedAlarm
-        Service->>+Kafka: publishAlarmJob(alarm)<br/>partitionKey = senderId:receiverId
-        Kafka-->>-Service: 발행 완료 (비동기)
-        Service-->>-Controller: Alarm 도메인 객체 반환
-        Controller-->>-Client: HTTP 201 Created<br/>AlarmResponse (즉시 응답)
-    end
+    Service->>+Redis: SETNX idem:{senderId}{uuid} → "PENDING" (TTL 5분)
+    Redis-->>-Service: true (신규 등록)
+    Service->>+DB: save(alarm) [status: PENDING]
+    DB-->>-Service: savedAlarm
+    Service->>+Kafka: publishAlarmJob(alarm)
+    Kafka-->>-Service: 발행 완료
+    Service-->>-Controller: Alarm 반환
+    Controller-->>-Client: HTTP 201 Created
 ```
 
-### 3.2 Kafka 소비 및 외부 발송 흐름 (KafkaAlarmJobConsumer)
+#### ❌ 실패 케이스 (중복 요청 → 409 Conflict)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Kafka as Kafka Broker<br/>(alarm-jobs)
+    actor Client as 클라이언트
+    participant Controller as AlarmController
+    participant Service as AlarmService
+    participant Redis as Redis
+
+    Client->>+Controller: POST /notifications (중복 요청)
+    Controller->>+Service: createAlarm(CreateAlarmCommand)
+    Service->>+Redis: SETNX idem:{senderId}{uuid}
+    Redis-->>-Service: false (이미 존재)
+    Service-->>-Controller: 409 CONFLICT 예외 발생
+    Controller-->>-Client: HTTP 409 Conflict
+```
+
+### 3.2 Kafka 소비 및 외부 발송 흐름 (KafkaAlarmJobConsumer)
+
+#### ✅ 성공 케이스
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Kafka as Kafka Broker
     participant Consumer as KafkaAlarmJobConsumer
-    participant Redis as Redis<br/>(proc: 처리 선점)
-    participant RateLimiter as RedisRateLimiter<br/>(Token Bucket)
-    participant ExtAPI as 외부 알림 API<br/>(MockApiNotificationAdapter)
-    participant DB as H2 DB<br/>(AlarmRepository)
-    participant RetryKafka as Kafka Broker<br/>(alarm-jobs-retry)
+    participant Redis as Redis
+    participant RateLimiter as RedisRateLimiter
+    participant ExtAPI as 외부 알림 API
+    participant DB as H2 DB
 
-    Kafka->>+Consumer: 배치 메시지 수신<br/>(최대 200건)
-
-    loop 각 메시지에 대해 멱등성 체크
-        Consumer->>+Redis: SETNX proc:{senderId}{uuid} → "PROCESSING"<br/>(TTL 3분)
-        alt 이미 PROCESSING 또는 DONE
-            Redis-->>Consumer: false (중복)
-            Consumer->>Consumer: 해당 메시지 건너뜀 (Idempotent Skip)
-        else 최초 처리
-            Redis-->>-Consumer: true (선점 성공)
-            Consumer->>Consumer: 처리 대상 목록에 추가
-        end
-    end
-
-    loop 200건 단위 청크 처리
-        Consumer->>+RateLimiter: tryAcquire(1) 토큰 획득 요청
-        alt 토큰 부족 (초당 500건 초과)
-            RateLimiter-->>Consumer: false
-            Consumer->>Consumer: Thread.sleep(100ms) 후 재시도
-        else 토큰 획득 성공
-            RateLimiter-->>-Consumer: true
-        end
-
-        Consumer->>+ExtAPI: sendNotification(batchItems)<br/>POST /notifications/batch
-
-        alt 429 / 5xx 에러 발생
-            ExtAPI-->>Consumer: HTTP 429 or 5xx
-            Consumer->>Consumer: 지수 백오프 재시도<br/>(최대 3회: 1s → 2s → 4s)
-            ExtAPI-->>-Consumer: 최종 실패
-            Consumer->>Redis: proc: 키 삭제 (재시도 가능 상태로 복원)
-            Consumer->>+RetryKafka: alarm-jobs-retry 토픽으로 발행
-            RetryKafka-->>-Consumer: 발행 완료
-        else 발송 성공
-            ExtAPI-->>-Consumer: HTTP 200 OK
-            Consumer->>Redis: proc:{senderId}{uuid} → "DONE" (TTL 3분)
-        end
-    end
-
-    Consumer->>+DB: updateStatusesInBatch(successIds, SENT)<br/>updateStatusesInBatch(failedIds, FAILED) [벌크 업데이트]
+    Kafka->>+Consumer: 배치 메시지 수신 (최대 200건)
+    Consumer->>+Redis: SETNX proc:{senderId}{uuid} → "PROCESSING" (TTL 3분)
+    Redis-->>-Consumer: true (선점 성공)
+    Consumer->>+RateLimiter: tryAcquire(1) 토큰 획득
+    RateLimiter-->>-Consumer: true (토큰 획득 성공)
+    Consumer->>+ExtAPI: sendNotification(batchItems) POST /notifications/batch
+    ExtAPI-->>-Consumer: HTTP 200 OK
+    Consumer->>Redis: proc:{senderId}{uuid} → "DONE" (TTL 3분)
+    Consumer->>+DB: updateStatusesInBatch(successIds, SENT)
     DB-->>-Consumer: 완료
-    Consumer->>DB: alarmExecutionLogRepositoryPort.saveAll(logs)
-    Consumer->>-Kafka: ack.acknowledge() 수동 오프셋 커밋
+    Consumer->>DB: saveAll(executionLogs)
+    Consumer-->>-Kafka: ack.acknowledge() 오프셋 커밋
+```
 
-    Note over RetryKafka,Consumer: alarm-jobs-retry 재소비 흐름
+#### ❌ 실패 케이스 (외부 API 오류 → 지수 백오프 재시도 → 재시도 토픽)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Kafka as Kafka Broker
+    participant Consumer as KafkaAlarmJobConsumer
+    participant Redis as Redis
+    participant RateLimiter as RedisRateLimiter
+    participant ExtAPI as 외부 알림 API
+    participant DB as H2 DB
+    participant RetryKafka as alarm-jobs-retry
+
+    Kafka->>+Consumer: 배치 메시지 수신
+    Consumer->>+Redis: SETNX proc:{senderId}{uuid} → "PROCESSING" (TTL 3분)
+    Redis-->>-Consumer: true (선점 성공)
+    Consumer->>+RateLimiter: tryAcquire(1) 토큰 획득
+    RateLimiter-->>-Consumer: true
+    Consumer->>+ExtAPI: sendNotification(batchItems)
+    ExtAPI-->>Consumer: HTTP 429 or 5xx
+    Note over Consumer,ExtAPI: 지수 백오프 재시도 (1s → 2s → 4s, 최대 3회)
+    ExtAPI-->>-Consumer: 최종 실패
+    Consumer->>Redis: proc: 키 삭제 (재시도 가능 상태로 복원)
+    Consumer->>+DB: updateStatusesInBatch(failedIds, FAILED)
+    DB-->>-Consumer: 완료
+    Consumer->>DB: saveAll(executionLogs)
+    Consumer->>+RetryKafka: alarm-jobs-retry 토픽으로 발행
+    RetryKafka-->>-Consumer: 발행 완료
+    Consumer-->>-Kafka: ack.acknowledge() 오프셋 커밋
+
+    Note over Consumer,RetryKafka: 1분 후 재소비 흐름
     RetryKafka->>+Consumer: consumeRetry() 수신
-    Consumer->>Consumer: Thread.sleep(60s) → 1분 지연 대기
-    Consumer->>-Kafka: alarm-jobs 토픽으로 재발행 → 메인 컨슈머 재처리
+    Consumer->>Consumer: Thread.sleep(60s) 지연
+    Consumer-->>-Kafka: alarm-jobs 토픽으로 재발행
 ```
 
 ---
