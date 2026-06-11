@@ -25,8 +25,19 @@ import java.time.Duration
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 
+import org.springframework.kafka.test.context.EmbeddedKafka
+
+/**
+ * [대상] AlarmController — 웹 인바운드 어댑터
+ * [범주] Web Adapter 통합 Test — MockMvc + H2 + EmbeddedKafka
+ *
+ * ① POST /notifications → HTTP 201, PENDING 상태 응답 + H2 DB 저장 확인
+ * ② POST /notifications + triggerAlarm 호출 → DB 상태 SENT 전이 확인
+ */
+
 @SpringBootTest
 @AutoConfigureMockMvc
+@EmbeddedKafka(partitions = 3, topics = ["alarm-jobs"], bootstrapServersProperty = "spring.kafka.bootstrap-servers")
 class AlarmControllerTest {
 
     @Autowired

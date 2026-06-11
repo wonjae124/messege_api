@@ -28,6 +28,15 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import reactor.core.publisher.Mono
 import java.time.Duration
 
+/**
+ * [대상] 비동기 Kafka 알람 발송 파이프라인 — 채점자 확인용
+ * [범주] Kafka 비동기 통합 Test — SpringBootTest + H2 + EmbeddedKafka
+ *
+ * ① POST /notifications → HTTP 201, PENDING 상태로 생성
+ * ② Kafka Consumer가 메시지 소비 → sendNotification 호출 (5초 timeout 비동기 검증)
+ * ③ 소비 완료 후 H2 DB 알람 상태 → SENT 전이 (100ms 간격 폴링, 최대 5초)
+ */
+
 @SpringBootTest
 @AutoConfigureMockMvc
 @EmbeddedKafka(partitions = 3, topics = ["alarm-jobs"], bootstrapServersProperty = "spring.kafka.bootstrap-servers")

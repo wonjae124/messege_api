@@ -3,7 +3,7 @@
 ## 1. 요구사항 분석
 - **기능**: 알림 API, Kafka 연동
   - 알림 신규 생성 및 발송 접수 기능 제공 (Spring Boot API Service, `/notifications` 엔드포인트)
-  - 즉시 발송 중심 설계: 모든 도메인, 서비스, 어댑터, DTO에서 예약 관련 시간 스펙(`scheduledAt`) 제거
+  - 즉시 발송 중심 설계
   - Kafka 기반 비동기 멱등성 제어 및 메시지 큐 연동
   - 외부 Mock API 서버 연동 (`NotificationPort` 및 `MockApiNotificationAdapter` 구현)
   - 동작 검증: 즉시 발송 및 Kafka 비동기 멱등성 연동 검증용 통합 테스트 제공 (`AlarmImmediateTriggerTest.kt`, `AlarmKafkaIntegrationTest.kt`)
@@ -30,29 +30,111 @@ graph TD
 - **발행 (Producer)**: 사용자가 `POST /notifications`를 통해 알림 발송을 요청하면, `KafkaAlarmJobProducer`가 `MessageQueuePort`를 통해 알림 이벤트를 Kafka 브로커로 발행합니다.
 - **소비 (Consumer)**: `KafkaAlarmJobConsumer`가 Kafka 브로커로부터 이벤트를 비동기적으로 전달받아, 중복 처리를 방지하기 위해 로컬 락 및 데이터베이스 상태 체크를 거쳐 멱등성을 보장하며 `NotificationPort`를 통해 알림을 전송합니다.
 
-### 2.2. 로컬 실행 방법
-Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플리케이션을 테스트할 수 있습니다.
-1. **Kafka 컨테이너 실행**:
-   프로젝트 루트 경로에서 아래 명령을 통해 백그라운드로 Kafka 브로커를 띄웁니다.
-   ```bash
-   docker-compose up -d
-   ```
-2. **애플리케이션 실행**:
-   ```bash
-   ./gradlew bootRun
-   ```
-3. **전체 통합 테스트 실행**:
-   ```bash
-   ./gradlew test
-   ```
+---
+
+## 3. 시퀀스 다이어그램
+
+### 3.1 알림 생성 및 Kafka 발행 흐름 (POST /notifications)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as 클라이언트
+    participant Controller as AlarmController
+    participant Service as AlarmService
+    participant Redis as Redis<br/>(멱등성 캐시)
+    participant DB as H2 DB<br/>(AlarmRepository)
+    participant Kafka as Kafka Broker<br/>(alarm-jobs)
+
+    Client->>+Controller: POST /notifications<br/>[Idempotency-Key 헤더 + Body]
+    Controller->>Controller: Idempotency-Key 파싱<br/>및 senderId 추출
+    Controller->>+Service: createAlarm(CreateAlarmCommand)
+
+    Service->>+Redis: SETNX idem:{senderId}{uuid} → "PENDING"<br/>(TTL 5분)
+    alt 이미 존재하는 키 (중복 요청)
+        Redis-->>Service: false (이미 존재)
+        Service-->>Controller: 409 CONFLICT 예외 발생
+        Controller-->>Client: HTTP 409 Conflict
+    else 최초 요청
+        Redis-->>-Service: true (신규 등록)
+        Service->>Service: Alarm.create() 정적 팩토리<br/>→ 도메인 유효성 검증 (name not blank)
+        Service->>+DB: alarmRepositoryPort.save(alarm)<br/>[status: PENDING]
+        DB-->>-Service: savedAlarm
+        Service->>+Kafka: publishAlarmJob(alarm)<br/>partitionKey = senderId:receiverId
+        Kafka-->>-Service: 발행 완료 (비동기)
+        Service-->>-Controller: Alarm 도메인 객체 반환
+        Controller-->>-Client: HTTP 201 Created<br/>AlarmResponse (즉시 응답)
+    end
+```
+
+### 3.2 Kafka 소비 및 외부 발송 흐름 (KafkaAlarmJobConsumer)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Kafka as Kafka Broker<br/>(alarm-jobs)
+    participant Consumer as KafkaAlarmJobConsumer
+    participant Redis as Redis<br/>(proc: 처리 선점)
+    participant RateLimiter as RedisRateLimiter<br/>(Token Bucket)
+    participant ExtAPI as 외부 알림 API<br/>(MockApiNotificationAdapter)
+    participant DB as H2 DB<br/>(AlarmRepository)
+    participant RetryKafka as Kafka Broker<br/>(alarm-jobs-retry)
+
+    Kafka->>+Consumer: 배치 메시지 수신<br/>(최대 200건)
+
+    loop 각 메시지에 대해 멱등성 체크
+        Consumer->>+Redis: SETNX proc:{senderId}{uuid} → "PROCESSING"<br/>(TTL 3분)
+        alt 이미 PROCESSING 또는 DONE
+            Redis-->>Consumer: false (중복)
+            Consumer->>Consumer: 해당 메시지 건너뜀 (Idempotent Skip)
+        else 최초 처리
+            Redis-->>-Consumer: true (선점 성공)
+            Consumer->>Consumer: 처리 대상 목록에 추가
+        end
+    end
+
+    loop 200건 단위 청크 처리
+        Consumer->>+RateLimiter: tryAcquire(1) 토큰 획득 요청
+        alt 토큰 부족 (초당 500건 초과)
+            RateLimiter-->>Consumer: false
+            Consumer->>Consumer: Thread.sleep(100ms) 후 재시도
+        else 토큰 획득 성공
+            RateLimiter-->>-Consumer: true
+        end
+
+        Consumer->>+ExtAPI: sendNotification(batchItems)<br/>POST /notifications/batch
+
+        alt 429 / 5xx 에러 발생
+            ExtAPI-->>Consumer: HTTP 429 or 5xx
+            Consumer->>Consumer: 지수 백오프 재시도<br/>(최대 3회: 1s → 2s → 4s)
+            ExtAPI-->>-Consumer: 최종 실패
+            Consumer->>Redis: proc: 키 삭제 (재시도 가능 상태로 복원)
+            Consumer->>+RetryKafka: alarm-jobs-retry 토픽으로 발행
+            RetryKafka-->>-Consumer: 발행 완료
+        else 발송 성공
+            ExtAPI-->>-Consumer: HTTP 200 OK
+            Consumer->>Redis: proc:{senderId}{uuid} → "DONE" (TTL 3분)
+        end
+    end
+
+    Consumer->>+DB: updateStatusesInBatch(successIds, SENT)<br/>updateStatusesInBatch(failedIds, FAILED) [벌크 업데이트]
+    DB-->>-Consumer: 완료
+    Consumer->>DB: alarmExecutionLogRepositoryPort.saveAll(logs)
+    Consumer->>-Kafka: ack.acknowledge() 수동 오프셋 커밋
+
+    Note over RetryKafka,Consumer: alarm-jobs-retry 재소비 흐름
+    RetryKafka->>+Consumer: consumeRetry() 수신
+    Consumer->>Consumer: Thread.sleep(60s) → 1분 지연 대기
+    Consumer->>-Kafka: alarm-jobs 토픽으로 재발행 → 메인 컨슈머 재처리
+```
 
 ---
 
-## 3. 주요 설계 의사결정 ⭐
+## 4. 주요 설계 의사결정 ⭐
 
-우리는 0.1초 내외의 빠른 사용자 경험을 보장하면서도 중복 발송이 없고 장애에 단단한 알림 시스템을 구축하기 위해 아키텍처부터 디테일한 구현 영역까지 다각도로 치열하게 고민했습니다. 주요 의사결정 흐름을 **설계, 구현, 성능, 안전성**의 4가지 범주로 묶어 정리합니다.
+주요 의사결정 흐름을 **설계, 구현, 성능, 안전성**의 4가지 범주
 
-### 🗂️ 범주 1. 아키텍처 및 시스템 설계 (Architecture & Design)
+### 🗂️ 범주 1. 아키텍처 및 시스템 설계
 
 #### 1.1 코드 아키텍처 선택 (헥사고날 vs 레이어드)
 - **고민하게 된 구체적 문제 상황**:
@@ -84,7 +166,7 @@ Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플�
 
 ---
 
-### 💻 범주 2. 도메인 및 객체 구현 (Domain & Object implementation)
+### 💻 범주 2. 도메인 및 객체 구현
 
 #### 2.1 도메인 모델링 방식 (풍부한 도메인 vs 빈약한 도메인)
 - **고민하게 된 구체적 문제 상황**:
@@ -116,7 +198,7 @@ Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플�
 
 ---
 
-### ⚡ 범주 3. 대용량 트래픽 및 성능 조율 (High-Throughput & Performance)
+### ⚡ 범주 3. 대용량 트래픽 및 성능 조율
 
 #### 3.1 즉시 발송 아키텍처 설계 (API 접수와 실제 처리의 분리)
 - **고민하게 된 구체적 문제 상황**:
@@ -183,7 +265,7 @@ Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플�
 
 ---
 
-### 🛡️ 범주 4. 시스템의 안정성과 예외 복구 (System Stability & Fault Tolerance)
+### 🛡️ 범주 4. 시스템의 안정성과 예외 복구
 
 #### 4.1 메시지 영속성 저장 매체 선택 (Redis vs Kafka)
 - **고민하게 된 구체적 문제 상황**:
@@ -262,7 +344,23 @@ Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플�
 
 ---
 
-## 4. 한계 · 추후 개선
-- **분산 락의 TTL 한계 보완**: 락 임계 시간 설정 시 작업 시간이 예상보다 길어질 경우를 대비해 Redisson의 Watchdog 기능 등을 고려합니다.
+## 5. 한계 · 추후 개선
 - **서킷 브레이커 도입**: 외부 서비스 장애가 워커 전체로 전파되지 않도록 Resilience4j 서킷 브레이커를 결합하여 장애 전파를 차단합니다.
-- **실시간 채널 확장**: SSE(Server-Sent Events) 또는 WebSocket을 결합하여 앱 내부 실시간 팝업 알림 기능을 추가 지원합니다.
+
+---
+
+## 6. 로컬 실행 방법
+Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플리케이션을 테스트할 수 있습니다.
+1. **Kafka 컨테이너 실행**:
+   프로젝트 루트 경로에서 아래 명령을 통해 백그라운드로 Kafka 브로커를 띄웁니다.
+   ```bash
+   docker-compose up -d
+   ```
+2. **애플리케이션 실행**:
+   ```bash
+   ./gradlew bootRun
+   ```
+3. **전체 통합 테스트 실행**:
+   ```bash
+   ./gradlew test
+   ```
