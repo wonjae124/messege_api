@@ -2,6 +2,7 @@ package com.alarm.domain
 
 import com.github.f4b6a3.uuid.UuidCreator
 import java.time.LocalDateTime
+import java.util.UUID
 
 /**
  * [파일명] AlarmOutboxEvent.kt
@@ -27,7 +28,7 @@ class AlarmOutboxEvent private constructor(
         fun create(alarm: Alarm): AlarmOutboxEvent {
             val uuid = alarm.id.replace("-", "")
             return AlarmOutboxEvent(
-                id = UuidCreator.getTimeOrderedEpoch().toString(),
+                id = UUID.randomUUID().toString(),
                 alarmId = alarm.id,
                 senderId = alarm.senderId,
                 receiverId = alarm.receiverId,

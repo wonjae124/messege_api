@@ -41,59 +41,42 @@ class AlarmService(
     override fun createAlarm(command: CreateAlarmUseCase.CreateAlarmCommand): Alarm {
         // API 레벨 멱등성 체크
         val uuidClean = command.id.replace("-", "")
+
+        // 멱등성 체크용 키, PENDING 값 설정(5분)
         val idemKey = "idem:${command.senderId}$uuidClean"
 
-        // 1. 단기 동시성 방어 (Redis 락 선점)
         val isFirstRequest = redisTemplate.opsForValue().setIfAbsent(
             idemKey,
-            "PROCESSING",
+            "PENDING",
             Duration.ofMinutes(5)
         )
 
+        // 이미 Key가 존재하면 false이므로 예외 발생
         if (isFirstRequest != true) {
-            // Redis 키가 이미 존재함: 과거에 성공했거나, 다른 스레드가 현재 처리 중임
-            // 2. 재처리 상태 확인: DB에 이미 반영되었는지 확인 (Source of Truth)
-            val existingAlarm = alarmRepositoryPort.findById(command.id)
-            if (existingAlarm != null) {
-                return existingAlarm // 이미 성공한 요청이므로 기존 결과 반환 (멱등성 보장)
-            }
-            // 아직 DB에 없다면 현재 다른 스레드가 트랜잭션을 잡고 처리 중인 상태임
             throw ResponseStatusException(
                 HttpStatus.CONFLICT,
-                "Request is currently being processed"
+                "Duplicate request based on Idempotency-Key"
             )
         }
 
-        try {
-            // 3. 장기 멱등성 방어: Redis 키가 만료된 이후의 중복 요청 방어
-            val existingAlarm = alarmRepositoryPort.findById(command.id)
-            if (existingAlarm != null) {
-                return existingAlarm
-            }
+        // 정적 팩토리 메서드를 사용하여 의도 명확화 및 검증 로직 강제화
+        val alarm = Alarm.create(
+            id = command.id,
+            senderId = command.senderId,
+            receiverId = command.receiverId,
+            name = command.name,
+            payload = command.payload
+            // default status : PENDING
+        )
 
-            // 정적 팩토리 메서드를 사용하여 의도 명확화 및 검증 로직 강제화
-            val alarm = Alarm.create(
-                id = command.id,
-                senderId = command.senderId,
-                receiverId = command.receiverId,
-                name = command.name,
-                payload = command.payload
-                // default status : PENDING
-            )
+        val savedAlarm = alarmRepositoryPort.save(alarm)
 
-            val savedAlarm = alarmRepositoryPort.save(alarm)
+        // [Outbox Pattern] Kafka 직접 발행 대신, 같은 트랜잭션 내에 Outbox 이벤트 저장
+        // OutboxEventPublisher 스케줄러가 PENDING 이벤트를 읽어 Kafka에 발행
+        val outboxEvent = AlarmOutboxEvent.create(savedAlarm)
+        alarmOutboxEventRepositoryPort.save(outboxEvent)
 
-            // [Outbox Pattern] Kafka 직접 발행 대신, 같은 트랜잭션 내에 Outbox 이벤트 저장
-            // OutboxEventPublisher 스케줄러가 PENDING 이벤트를 읽어 Kafka에 발행
-            val outboxEvent = AlarmOutboxEvent.create(savedAlarm)
-            alarmOutboxEventRepositoryPort.save(outboxEvent)
-
-            return savedAlarm
-        } catch (e: Exception) {
-            // 🚨 [장애 복구 로직] DB 저장이 실패했다면 클라이언트가 즉시 재시도할 수 있도록 Redis 키 삭제
-            redisTemplate.delete(idemKey)
-            throw e
-        }
+        return savedAlarm
     }
 
     override fun getAlarm(id: String): Alarm {
@@ -120,7 +103,6 @@ class AlarmService(
                 AlarmStatus.PENDING -> alarm.markPending()
                 AlarmStatus.SENT -> alarm.sent()
                 AlarmStatus.FAILED -> alarm.fail()
-                else -> { /* no-op or handle other statuses if needed */ }
             }
         }
         return alarmRepositoryPort.save(alarm)
