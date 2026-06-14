@@ -2,12 +2,14 @@ package com.alarm.application.service
 
 import com.alarm.application.port.`in`.*
 import com.alarm.application.port.out.AlarmExecutionLogRepositoryPort
+import com.alarm.application.port.out.AlarmOutboxEventRepositoryPort
 import com.alarm.application.port.out.AlarmRepositoryPort
 import com.alarm.application.port.out.MessageQueuePort
 import com.alarm.application.port.out.NotificationPort
 import com.alarm.application.port.out.AlarmBatchItem
 import com.alarm.domain.Alarm
 import com.alarm.domain.AlarmExecutionLog
+import com.alarm.domain.AlarmOutboxEvent
 import com.alarm.domain.AlarmStatus
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
@@ -31,6 +33,7 @@ class AlarmService(
     private val alarmExecutionLogRepositoryPort: AlarmExecutionLogRepositoryPort,
     private val notificationPort: NotificationPort,
     private val messageQueuePort: MessageQueuePort,
+    private val alarmOutboxEventRepositoryPort: AlarmOutboxEventRepositoryPort,
     private val redisTemplate: StringRedisTemplate
 ) : CreateAlarmUseCase, GetAlarmQuery, UpdateAlarmUseCase, DeleteAlarmUseCase, TriggerAlarmUseCase {
 
@@ -38,12 +41,17 @@ class AlarmService(
     override fun createAlarm(command: CreateAlarmUseCase.CreateAlarmCommand): Alarm {
         // API 레벨 멱등성 체크
         val uuidClean = command.id.replace("-", "")
+
+        // 멱등성 체크용 키, PENDING 값 설정(5분)
         val idemKey = "idem:${command.senderId}$uuidClean"
+
         val isFirstRequest = redisTemplate.opsForValue().setIfAbsent(
             idemKey,
             "PENDING",
             Duration.ofMinutes(5)
         )
+
+        // 이미 Key가 존재하면 false이므로 예외 발생
         if (isFirstRequest != true) {
             throw ResponseStatusException(
                 HttpStatus.CONFLICT,
@@ -58,9 +66,16 @@ class AlarmService(
             receiverId = command.receiverId,
             name = command.name,
             payload = command.payload
+            // default status : PENDING
         )
+
         val savedAlarm = alarmRepositoryPort.save(alarm)
-        messageQueuePort.publishAlarmJob(savedAlarm)
+
+        // [Outbox Pattern] Kafka 직접 발행 대신, 같은 트랜잭션 내에 Outbox 이벤트 저장
+        // OutboxEventPublisher 스케줄러가 PENDING 이벤트를 읽어 Kafka에 발행
+        val outboxEvent = AlarmOutboxEvent.create(savedAlarm)
+        alarmOutboxEventRepositoryPort.save(outboxEvent)
+
         return savedAlarm
     }
 

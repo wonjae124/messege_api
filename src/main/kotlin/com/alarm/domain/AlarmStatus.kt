@@ -8,7 +8,9 @@ package com.alarm.domain
  */
 enum class AlarmStatus {
     PENDING,
+    PUBLISHED,
     SENT,
-    FAILED
+    FAILED,
+    PUBLISH_FAILED
 }
 

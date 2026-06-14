@@ -164,6 +164,21 @@ sequenceDiagram
 - **결정**: B안 (헥사고날 아키텍처). 외부 메시지 큐, 캐시/분산락 등 기술 종속성을 도메인과 완벽히 격리하기 위함.
 - **포기한 것**: 초기 폴더 구조의 단순함 및 초기 개발 생산성.
 
+  ```kotlin
+  // [NotificationPort.kt] 도메인이 의존하는 아웃바운드 포트 인터페이스
+  interface NotificationPort {
+      fun sendNotification(items: List<AlarmBatchItem>): Mono<Void>
+  }
+
+  // [MockApiNotificationAdapter.kt] 포트를 구현하는 인프라 어댑터
+  @Component
+  class MockApiNotificationAdapter(
+      @Value("\${mock.api.url:http://localhost:8081}") private val mockApiUrl: String
+  ) : NotificationPort {
+      override fun sendNotification(items: List<AlarmBatchItem>): Mono<Void> { ... }
+  }
+  ```
+
 #### 1.2 발송 채널 확장성 패턴 (전략 + 팩토리)
 - **고민하게 된 구체적 문제 상황**:
   - 초기에는 카카오톡 비즈니스 알림톡만 발송하던 서비스에 SMS, 푸시 알림, 이메일, Webhook 채널이 추가로 연동되어야 하는 상황이었습니다.
@@ -177,6 +192,15 @@ sequenceDiagram
     - *단점*: 파일의 개수가 늘어나며 코드 실행 동적 추적이 조금 번거로움.
 - **결정**: B안 (전략 패턴 + 스프링 빈 팩토리 패턴). 기존 검증된 코드의 변경 없이 신규 발송 클래스만 추가하여 유연하게 확장하기 위함.
 - **포기한 것**: 코드 가시성 (하나의 파일 내에서 흐름을 모아보는 단순함).
+
+  ```kotlin
+  // [AlarmService.kt] 채널 타입에 상관없이 NotificationPort 인터페이스만 호출
+  notificationPort.sendNotification(listOf(batchItem)).block()
+
+  // 새 채널 추가 시 → NotificationPort 구현체만 새로 추가하면 끝 (기존 코드 변경 없음)
+  // @Component class SmsNotificationAdapter : NotificationPort { ... }
+  // @Component class EmailNotificationAdapter : NotificationPort { ... }
+  ```
 
 ---
 
@@ -196,6 +220,16 @@ sequenceDiagram
 - **결정**: B안 (풍부한 도메인 모델). 도메인 메서드를 통해 비즈니스 지식이 도메인 외부로 유출되는 것을 차단하기 위함.
 - **포기한 것**: DB 테이블 컬럼 정보를 그대로 Getter/Setter로 다루는 단순한 데이터 전달 방식.
 
+  ```kotlin
+  // [Alarm.kt] 상태 변경은 반드시 도메인 메서드를 통해서만 가능
+  fun sent() { status = AlarmStatus.SENT; updatedAt = LocalDateTime.now() }
+  fun fail() { status = AlarmStatus.FAILED; updatedAt = LocalDateTime.now() }
+
+  // [AlarmService.kt] 외부에서 status를 직접 대입하지 않고 행위 메서드 호출
+  alarm.sent()         // ✅ 도메인 행위 메서드
+  // alarm.status = AlarmStatus.SENT  // ❌ 직접 대입 불가 (private constructor)
+  ```
+
 #### 2.2 객체 생성 방식 (기본 생성자 vs 정적 팩토리 메서드)
 - **고민하게 된 구체적 문제 상황**:
   - 알람 객체는 발송 주체 식별자(`senderId`), 수신자 식별자(`receiverId`), 멱등키(`requestId`) 등의 필수 필드가 절대 누락되거나 빈 문자열이어서는 안 됩니다.
@@ -210,9 +244,73 @@ sequenceDiagram
 - **결정**: B안 (정적 팩토리 메서드 패턴). 팩토리 내부 검증 코드를 통과해야만 인스턴스를 반환하여 생성 순간부터 유효함을 보장하기 위함.
 - **포기한 것**: 생성자 직접 호출 문법의 간결함.
 
+  ```kotlin
+  // [Alarm.kt] private constructor로 외부 직접 생성 차단
+  class Alarm private constructor( ... ) {
+      companion object {
+          fun create(senderId: String, receiverId: String, name: String, ...): Alarm {
+              require(name.isNotBlank()) { "알람 이름은 비어있을 수 없습니다." }  // 검증 강제
+              return Alarm(id, senderId, receiverId, name, AlarmStatus.PENDING, ...)
+          }
+      }
+  }
+
+  // [AlarmService.kt] 팩토리 메서드를 통한 생성만 허용
+  val alarm = Alarm.create(
+      senderId = command.senderId,
+      receiverId = command.receiverId,
+      name = command.name,
+      payload = command.payload
+  )
+  ```
+
 ---
 
 ### ⚡ 범주 3. 대용량 트래픽 및 성능 조율
+
+#### 3.0 알람 저장과 Kafka 발행의 원자성 보장 (Outbox Pattern)
+- **고민하게 된 구체적 문제 상황**:
+  - **[프로세스 단계: RDB 저장 → Kafka 발행 전환부]**
+  - 알람 생성 플로우에서 RDB에 PENDING 상태로 알람을 저장한 뒤 곧바로 Kafka 프로듀서를 호출하는 구조였습니다. `kafkaTemplate.send()`는 내부적으로 비동기(fire-and-forget)로 동작하기 때문에, 실제 브로커 발행 실패 여부를 반환값에서 확인하지 않으면 알 수 없습니다.
+  - 이 상황에서 Kafka 브로커가 일시적으로 다운되거나 네트워크 장애가 발생하면, RDB에는 PENDING 상태의 알람이 저장되었지만 Kafka에는 메시지가 전달되지 않아 해당 알람은 영원히 발송되지 않는 문제가 발생했습니다. `@Transactional`이 감싸고 있어도 Kafka 발행은 DB 트랜잭션 밖의 외부 IO이므로, Kafka 실패 시 DB 롤백이 발생하지 않습니다.
+  - 즉, **RDB 저장과 Kafka 발행은 원자적으로 묶을 수 없는 두 개의 독립된 작업**이며, 둘 사이에서 장애가 나면 데이터 불일치가 발생합니다.
+- **대안**:
+  - **A안**: `kafkaTemplate.send().get()`으로 브로커 ACK를 동기 대기한 후 발행 성공 시 반환
+    - *장점*: 구현이 단순하고 발행 실패 시 즉시 예외로 클라이언트에 알릴 수 있음.
+    - *단점*: API 응답이 Kafka 브로커 ACK까지 블로킹되어 레이턴시 증가. 브로커 장애 시 API 전체가 느려짐.
+  - **B안**: Outbox Pattern — 알람 저장과 Outbox 이벤트 저장을 같은 DB 트랜잭션에 묶고, 별도 스케줄러가 PENDING Outbox를 읽어 Kafka에 발행
+    - *장점*: DB 트랜잭션이 커밋되면 Outbox 이벤트가 반드시 존재하므로 메시지 유실 불가. Kafka 장애가 API 응답 레이턴시에 영향을 주지 않음. 발행 실패 이벤트를 FAILED 상태로 추적하여 운영 모니터링 가능.
+    - *단점*: `alarm_outbox_events` 테이블 추가, 스케줄러(`OutboxEventPublisher`) 구현 필요. 발행 지연이 스케줄러 주기(1초) 만큼 발생.
+- **결정**: B안 (Outbox Pattern). RDB 저장과 Kafka 발행의 원자성을 보장하고, Kafka 장애가 API 응답에 영향을 미치지 않도록 분리하기 위함.
+- **포기한 것**: Kafka 발행 성공 여부를 API 응답 시점에 즉시 확인하는 단순성.
+
+  ```kotlin
+  // [AlarmService.kt] 같은 트랜잭션 내에 알람 + Outbox 이벤트 동시 저장
+  @Transactional
+  override fun createAlarm(command: CreateAlarmUseCase.CreateAlarmCommand): Alarm {
+      val savedAlarm = alarmRepositoryPort.save(alarm)          // ① 알람 저장 (PENDING)
+
+      val outboxEvent = AlarmOutboxEvent.create(savedAlarm)
+      alarmOutboxEventRepositoryPort.save(outboxEvent)          // ② Outbox 이벤트 저장 (같은 트랜잭션)
+      // 트랜잭션 커밋 → 둘 다 저장 보장, Kafka 직접 호출 없음
+      return savedAlarm
+  }
+
+  // [OutboxEventPublisher.kt] 1초마다 PENDING 이벤트 폴링 → Kafka 발행
+  @Scheduled(fixedDelay = 1000)
+  fun publishPendingEvents() {
+      val pendingEvents = alarmOutboxEventRepositoryPort.findAllByStatus(OutboxStatus.PENDING)
+      for (event in pendingEvents) {
+          try {
+              messageQueuePort.publishAlarmJobFromOutbox(event)  // .get()으로 ACK 동기 확인
+              event.markPublished()
+          } catch (e: Exception) {
+              event.markFailed()                                  // FAILED → 운영 모니터링
+          }
+          alarmOutboxEventRepositoryPort.save(event)
+      }
+  }
+  ```
 
 #### 3.1 즉시 발송 아키텍처 설계 (API 접수와 실제 처리의 분리)
 - **고민하게 된 구체적 문제 상황**:
@@ -229,6 +327,19 @@ sequenceDiagram
 - **결정**: B안 (접수와 실제 처리 분리). 즉시 응답 요구사항 충족과 고부하 분산을 위해 MQ를 통한 비동기 처리가 적절하므로 채택함.
 - **포기한 것**: 발송 성공/실패 여부를 API 호출 결과로 즉시 반환받는 단순성.
 
+  ```kotlin
+  // [AlarmService.kt] API는 DB 저장 후 Kafka 발행만 하고 즉시 반환
+  val savedAlarm = alarmRepositoryPort.save(alarm)   // 1. DB 저장
+  messageQueuePort.publishAlarmJob(savedAlarm)        // 2. Kafka 발행 (비동기)
+  return savedAlarm                                   // 3. 즉시 HTTP 201 응답
+
+  // [KafkaAlarmJobConsumer.kt] 실제 발송은 워커가 비동기로 처리
+  @KafkaListener(topics = ["alarm-jobs"], groupId = "alarm-group", concurrency = "3")
+  fun consumeAlarmJobs(payloads: List<String>, ack: Acknowledgment) {
+      notificationPort.sendNotification(batchItems).block()  // 실제 외부 API 호출
+  }
+  ```
+
 #### 3.2 클라이언트 중복 요청 방지 검증 기술 (Redis vs RDB)
 - **고민하게 된 구체적 문제 상황**:
   - **[프로세스 단계: 최초 API 진입 및 중복 검증부]**
@@ -243,6 +354,17 @@ sequenceDiagram
     - *단점*: Redis 추가 관리에 따른 인프라 비용 발생.
 - **결정**: B안 (Redis 멱등 검사). 대량 트래픽 상황에서 RDB의 스케일 아웃 한계를 넘어서고 부하를 완벽히 분산하기 위해 Redis로 분리함.
 - **포기한 것**: 트랜잭션 안에서 RDB 하나로 모든 데이터 정합성을 한 번에 묶는 데이터 처리의 단순성.
+
+  ```kotlin
+  // [AlarmService.kt] Redis SETNX로 중복 요청 차단
+  val idemKey = "idem:${command.senderId}$uuidClean"
+  val isFirstRequest = redisTemplate.opsForValue().setIfAbsent(
+      idemKey, "PENDING", Duration.ofMinutes(5)  // TTL 5분
+  )
+  if (isFirstRequest != true) {
+      throw ResponseStatusException(HttpStatus.CONFLICT, "Duplicate request based on Idempotency-Key")
+  }
+  ```
 
 #### 3.3 카프카 비동기 분산 시 순차 처리 및 핫파티션 회피 파티션 키 설계
 - **고민하게 된 구체적 문제 상황**:
@@ -262,6 +384,15 @@ sequenceDiagram
 - **결정**: C안 (`senderId` + `receiverId` 조합). 핫파티션을 회피하며 메시지 1/N 밸런싱을 유도하기 위해 채택함.
 - **포기한 것**: 단순 도메인 엔티티 ID 하나만 파티션 키로 지정하는 직관성.
 
+  ```kotlin
+  // [KafkaAlarmJobProducer.kt] senderId + receiverId 조합을 파티션 키로 사용
+  override fun publishAlarmJob(alarm: Alarm) {
+      val partitionKey = "${alarm.senderId}:${alarm.receiverId}"  // 조합 파티션 키
+      val payload = """{"alarmId":"${alarm.id}","senderId":"${alarm.senderId}",...}"""
+      kafkaTemplate.send("alarm-jobs", partitionKey, payload)
+  }
+  ```
+
 #### 3.4 외부 연동 API 서버 보호를 위한 전송 빈도 조율 (Rate Limiting)
 - **고민하게 된 구체적 문제 상황**:
   - **[프로세스 단계: 컨슈머 워커 -> 외부 API 연동 호출부]**
@@ -276,6 +407,22 @@ sequenceDiagram
     - *단점*: Bucket4j 설정 및 배치 전송 처리를 위한 추가 연동 필요.
 - **결정**: B안 (Kafka Batch Listener + Redis Bucket4j). 상대 API 서버의 부하 한계 속도에 동적으로 부합하도록 하여 429 차단을 원천 방지하기 위해 채택함.
 - **포기한 것**: 단건 발송용 단순 API 통신 아키텍처.
+
+  ```kotlin
+  // [KafkaAlarmJobConsumer.kt] 200건 배치 + Redis 토큰 버킷으로 초당 500건 제한
+  val chunks = itemsToProcess.chunked(200)  // 최대 200건 배치 단위
+  for (chunk in chunks) {
+      while (!redisRateLimiter.tryAcquire(1)) {  // 토큰 소진 시 대기
+          Thread.sleep(100)
+      }
+      notificationPort.sendNotification(batchItems).block()  // 배치 전송
+  }
+
+  // [RedisRateLimiter.kt] Lua Script로 원자적 토큰 버킷 (capacity=500/sec)
+  private val capacity = 500
+  private val refillRate = 500
+  fun tryAcquire(tokens: Int = 1): Boolean { ... }
+  ```
 
 ---
 
@@ -296,6 +443,15 @@ sequenceDiagram
 - **결정**: B안 (Kafka). 장애 복구 및 메시지 재처리를 가능케 해 알림 유실을 원천적으로 막기 위해 디스크 기반 영구 저장을 보장하는 Kafka를 채택함.
 - **포기한 것**: 인메모리 완전 초고속 처리성능 및 Redis 단일 인프라 구성의 간결함.
 
+  ```kotlin
+  // [KafkaAlarmJobConsumer.kt] 장애 후 재기동 시 Kafka 오프셋부터 자동 재처리
+  @KafkaListener(topics = ["alarm-jobs"], groupId = "alarm-group", concurrency = "3")
+  fun consumeAlarmJobs(payloads: List<String>, ack: Acknowledgment) {
+      // ... 처리 완료 후
+      ack.acknowledge()  // 수동 커밋 → 실패 시 재소비 보장
+  }
+  ```
+
 #### 4.2 동시성 및 중복 제어 엔진 선택 (Redis 분산 락 vs Kafka 큐)
 - **고민하게 된 구체적 문제 상황**:
   - **[프로세스 단계: 이벤트 소비 제어부]**
@@ -310,6 +466,18 @@ sequenceDiagram
     - *단점*: API 응답 시점에 결과를 반환할 수 없어 접수 응답만 나가므로 비동기 조회 처리가 동반되어야 함.
 - **결정**: B안 (Kafka 파티션 키 기반 비동기 순차 제어). 멱등성 키(`requestId`)를 카프카 파티션 키로 하여 단일 파티션으로 순차 정렬하고, 디스크 영속성을 통해 장애 복구 시에도 메시지 유실율을 0%에 수렴시키기 위함.
 - **포기한 것**: API 호출 시점의 동기식 발송 완료 상태 반환.
+
+  ```kotlin
+  // [KafkaAlarmJobConsumer.kt] Redis SETNX로 소비 선점 → 중복 소비 원천 차단
+  val procKey = "proc:${payload.senderId}${payload.uuid}"
+  val isFirstProcessing = redisTemplate.opsForValue()
+      .setIfAbsent(procKey, "PROCESSING", Duration.ofMinutes(3))
+  if (isFirstProcessing == true) {
+      itemsToProcess.add(payload)  // 최초 소비자만 처리
+  } else {
+      logger.info("Duplicate Kafka job detected and ignored: alarmId = {}", payload.alarmId)
+  }
+  ```
 
 #### 4.3 공통 자원 제어 패턴 (AOP 프록시 vs 템플릿/콜백)
 - **고민하게 된 구체적 문제 상황**:
@@ -341,6 +509,14 @@ sequenceDiagram
 - **결정**: B안 (Redis `SETNX` 기반 진행 선점). 네트워크 타임아웃 및 컨슈머 재할당 과정에서 발생할 수 있는 중복 트리거를 확실히 차단하기 위해 채택함.
 - **포기한 것**: Redis 미연동 시 로컬 메모리 상태에만 의존하는 가벼움.
 
+  ```kotlin
+  // [KafkaAlarmJobConsumer.kt] 처리 성공 시 DONE, 실패 시 proc 키 삭제로 재시도 허용
+  // 성공
+  redisTemplate.opsForValue().set(procKey, "DONE", Duration.ofMinutes(3))
+  // 실패
+  redisTemplate.delete(procKey)  // 키 삭제 → 다음 컨슈머가 다시 선점 가능
+  ```
+
 #### 4.5 외부 에러(429/503 등) 복구 및 사후 실패 처리
 - **고민하게 된 구체적 문제 상황**:
   - **[프로세스 단계: 발송 최종 결과 갱신부]**
@@ -355,6 +531,52 @@ sequenceDiagram
     - *단점*: 비동기 재시도 큐 관리 복잡도가 증가함.
 - **결정**: B안 (지수 백오프 및 재시도 토픽 구성). 인프라의 장애 내구성(Fault Tolerance)을 극대화하여 무장애 운영을 가능케 하기 위해 채택함.
 - **포기한 것**: 장애 발생 시의 실시간 동기적 즉시 에러 피드백 반환.
+
+  ```kotlin
+  // [MockApiNotificationAdapter.kt] 429/5xx 에러 시 지수 백오프 자동 재시도
+  .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))  // 1s → 2s → 4s, 최대 3회
+      .filter { it is WebClientResponseException &&
+          (it.statusCode.value() == 429 || it.statusCode.is5xxServerError) }
+  )
+
+  // [KafkaAlarmJobConsumer.kt] 최종 실패 시 Retry Topic으로 우회 → 1분 후 재소비
+  kafkaTemplate.send("alarm-jobs-retry", failedPayload)
+
+  @KafkaListener(topics = ["alarm-jobs-retry"], groupId = "alarm-retry-group")
+  fun consumeRetry(record: String) {
+      Thread.sleep(60000)                    // 1분 대기
+      kafkaTemplate.send("alarm-jobs", record)  // 원래 토픽으로 재발행
+  }
+  ```
+
+#### 4.6 Kafka 브로커 메시지 유실 및 중복 저장 방지 (replication.factor + enable.idempotence)
+- **고민하게 된 구체적 문제 상황**:
+  - **[프로세스 단계: 프로듀서 → 브로커 메시지 적재부]**
+  - Kafka 안전성 점검 과정에서 프로듀서와 컨슈머 단 모두에서 데이터 유실과 중복이 실제로 보장되지 않음을 발견했습니다.
+  - **메시지 유실 케이스**: 대규모 마케팅 알림 발송 도중 리더 브로커에 장애가 발생했을 때, 개발자는 Kafka에 메시지를 성공적으로 올렸다고 확신했지만 컨슈머에서 꺼내보면 아무 메시지도 없는 기이한 현상이 발생했습니다. `replication.factor=1` 상태에서 리더 브로커만 메시지를 저장하고 ACK를 보낸 뒤, 팔로워에 복제되기 전 리더가 죽으면 해당 알림 메시지가 영구 유실됩니다.
+  - **메시지 중복 케이스**: 프로듀서가 메시지를 전송했지만 네트워크 문제로 ACK를 수신하지 못하면, 프로듀서는 실패로 착각하고 동일 메시지를 재전송합니다. 브로커에 동일 알림 메시지가 2건 저장되어 고객에게 중복 알림이 발송되는 문제가 발생합니다.
+- **대안**:
+  - **A안**: 기본 설정 유지 (replication.factor=1, idempotence 미명시)
+    - *장점*: 단일 브로커 구성으로 인프라가 단순하고 빠른 응답 가능.
+    - *단점*: 리더 브로커 장애 시 메시지 영구 유실, ACK 유실 시 브로커 중복 저장 가능.
+  - **B안**: `replication.factor=3` + `min.insync.replicas=2` + `enable.idempotence=true`(기본값 명시)
+    - *장점*: 리더가 죽어도 팔로워 복제본에 메시지가 보존되며, ACK 유실로 인한 프로듀서 재시도 시에도 브로커가 sequence number로 중복 저장을 차단함.
+    - *단점*: 브로커 3대 이상의 클러스터 구성이 필요하며, ISR 복제 확인 대기로 인한 소폭의 레이턴시 증가.
+- **결정**: B안 (`replication.factor=3` + `min.insync.replicas=2` + `enable.idempotence=true`). 알림 메시지 유실과 중복 발송을 브로커 레벨에서 원천 차단하기 위함.
+- **포기한 것**: 단일 브로커 구성의 단순함과 acks=1의 빠른 응답 속도.
+
+  ```kotlin
+  // [KafkaConfig.kt] replication.factor=3, min.insync.replicas=2 적용
+  TopicBuilder.name("alarm-jobs")
+      .partitions(3)
+      .replicas(3)  // replication.factor=3: 리더 죽어도 팔로워 복제본에 메시지 보존
+      .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "2")  // 최소 2개 ISR 확인 후 ACK
+      .build()
+
+  // [application.properties]
+  // spring.kafka.producer.acks=all           ← enable.idempotence=true 기본값으로 자동 적용
+  // enable.idempotence=true (Kafka 3.0+ 기본값) ← ACK 유실 재시도 시 브로커 중복 저장 차단
+  ```
 
 ---
 
