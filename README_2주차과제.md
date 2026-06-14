@@ -108,3 +108,160 @@ if (publishSuccess) {
     alarmRepository.updateStatusesInBatch(alarmId, AlarmStatus.PUBLISH_FAILED)
 }
 ```
+
+<br>
+
+## 3. Consumer 멱등성이 휘발성 Redis 키에만 의존하는 문제 해결
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **기존 구조의 한계**: 기존 컨슈머는 중복 판단을 오직 Redis의 `proc:` 키(TTL 3분)에만 의존했으며, DB의 알람 상태는 조회하지 않았습니다.
+- **유실 시나리오**:
+  1. 컨슈머가 `PROCESSING` 선점 후 외부 API 호출 전에 크래시됨 (ack 전)
+  2. 카프카가 장애 복구를 위해 똑같은 메시지를 재전달함
+  3. 하지만 3분이 지나지 않아 Redis엔 여전히 `PROCESSING` 키가 살아있어 중복으로 오판하고 스킵함
+  4. 스킵된 채 `ack.acknowledge()`가 호출되어, 메시지는 발송되지 않고 영원히 증발함
+- **중복 시나리오**:
+  - 발송 성공 기록(`SENT`)이 DB에만 저장되고 컨슈머는 이를 참조하지 않음.
+  - 3분이 지나 Redis 키가 사라진 뒤 카프카에서 예전 메시지가 재전달되면, 멱등성을 방어할 수단이 없어 그대로 중복 발송됨.
+
+---
+
+#### ⚖️ 대안 비교 및 결정
+
+**✅ 결정: DB를 Source of Truth로 활용하는 DCL(Double-Checked Locking) 구조 도입**
+
+- **1차 검증 (DB)**: 수신한 배치 데이터의 상태를 DB에서 대량 조회 후, 이미 `SENT`, `FAILED`, `DEAD`인 건은 필터링하여 Redis 락 경합조차 하지 않음.
+- **분산 락 (Redis)**: 남은 대상들만 Redis `setIfAbsent`를 통해 찰나의 동시성(Race Condition)을 방어.
+- **2차 검증 (DB)**: 락을 획득한 이후 DB 상태를 다시 한번 조회하여, 락 대기 중 다른 인스턴스가 처리해버린 건을 차단.
+- **상태 전이(SENDING) 및 안전한 Lock 해제**: 검증을 통과한 건만 `SENDING`으로 상태를 변경한 뒤 API를 호출하고, 예외 발생 여부와 무관하게 `finally` 블록에서 Redis 락을 해제. 모든 DB 반영이 끝난 뒤에만 오프셋 커밋(Ack) 수행.
+
+#### 💡 결과 및 기대 효과
+- **완벽한 중복 차단**: 수 밀리초 내의 동시 요청은 Redis가 튕겨내고, 장기적인 오프셋 재전달은 DB가 튕겨내는 2중 방어선 구축.
+- **완벽한 유실 차단**: API 호출 전 크래시가 나더라도, `finally`에서 락이 해제되거나 TTL 만료 후 다음 재전달 시 DB 상태가 여전히 `PUBLISHED`이므로 정상적으로 재처리됨.
+- **명확한 에러 라우팅**: HTTP 400 계열은 즉시 `FAILED`로, 500 계열/Timeout은 `RETRY` 토픽으로 재발행하며, 재시도 초과 시 `DEAD` 상태로 분류하여 운영 대응력을 극대화함.
+
+---
+
+#### 💻 적용 코드 예시 (핵심 요약)
+```kotlin
+// 1. 1차 DB 상태 검증 (SENT, FAILED, DEAD는 무시)
+val initialAlarms = alarmRepository.findAllByIds(alarmIds)
+val validPayloads = payloads.filter { isValidStatus(initialAlarms[it.alarmId]) }
+
+// 2. Redis 분산 락 획득 시도 (단기 동시성 방어)
+for (payload in validPayloads) {
+    if (redisTemplate.setIfAbsent("proc:${payload.uuid}", "PROCESSING", 3분) == true) {
+        lockedPayloads.add(payload)
+    }
+}
+
+try {
+    // 3. 2차 DB 상태 검증 (Double-Checked Locking)
+    val finalAlarms = alarmRepository.findAllByIds(lockedAlarmIds)
+    val finalPayloads = lockedPayloads.filter { isValidStatus(finalAlarms[it.alarmId]) }
+    
+    // 4. 상태 전이(SENDING) 및 API 대량 호출
+    alarmRepository.updateStatusesInBatch(finalIds, AlarmStatus.SENDING)
+    notificationPort.sendNotification(batchItems)
+    
+    // 5. 발송 결과 저장 및 에러 라우팅 (SENT, FAILED, RETRY, DEAD)
+    alarmRepository.updateStatusesInBatch(successfulIds, AlarmStatus.SENT)
+    
+} finally {
+    // 6. 예외 발생 여부와 무관하게 무조건 Redis 락 해제 및 Offset 커밋
+    redisTemplate.delete(lockKeys)
+    ack.acknowledge()
+}
+```
+
+<br>
+
+## 4. Producer(API) 멱등성 및 DB 장애 복구 설계
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **캐시와 DB의 라이프사이클 불일치**: `createAlarm` API에서 중복 요청을 방어하기 위해 Redis의 `setIfAbsent`를 이용해 5분짜리 락(Idempotency Key)을 잡고 DB에 알람과 Outbox를 저장함.
+- **장애 시나리오 (재시도 불가 문제)**:
+  - Redis 락을 잡은 직후, DB 커넥션 풀 고갈이나 데드락 등의 이유로 DB 저장이 실패함.
+  - 트랜잭션이 롤백되고 클라이언트에게 500 에러가 반환됨.
+  - 클라이언트가 즉시 재시도를 하지만, Redis에는 여전히 5분짜리 락이 남아있어 `409 Conflict` 에러를 뱉음.
+  - 결국 **DB 문제로 실패한 요청은 5분 동안 절대 재처리가 불가능해지는 치명적 버그** 발생.
+
+---
+
+#### ⚖️ 대안 비교 및 결정
+
+**A안: DB의 Unique Index 제약 조건을 Source of Truth로 활용**
+- **방식**: Redis를 쓰지 않고(혹은 방어용으로만 쓰고), DB의 `(sender_id, uuid)`에 유니크 키를 걸어 중복 Insert 시 예외를 잡는 방식.
+- **단점**: 악의적인 대량의 중복 요청(DDoS)이나 클라이언트 버그로 수백 번의 재시도가 들어올 경우, 모든 요청이 DB까지 도달하여 **DB 커넥션 풀을 심각하게 고갈시킬 위험**이 큼.
+
+**B안: `try-catch` 기반의 Redis 락 보상 트랜잭션 (선택)**
+- **방식**: DB 저장 로직을 `try-catch`로 감싸고, 예외 발생 시 `finally` 또는 `catch` 블록에서 선점했던 Redis 락을 즉시 지워버리는(`delete`) 방식.
+- **장점**: 대량의 악성 트래픽은 메모리(Redis) 단에서 빠르게 쳐내어 DB를 보호하고, 내부 서버 오류로 인한 정상적인 재시도 요청은 즉시 허용할 수 있음.
+
+**✅ 결정: B안 (Redis 락 해제) + DB 상태 확인(재처리 상태 반환)**
+- **의사결정 사유**: 시스템 전체의 목줄인 **DB 커넥션 고갈을 방어하는 것이 1순위**이므로 1안(Redis 보상 트랜잭션)을 채택.
+- **추가 해결책 (재처리 상태 확인)**:
+  - 클라이언트가 락에 막혔을 때(Redis 키가 존재할 때) 무작정 409 에러를 뱉는 대신, DB를 한 번 찔러봄(`findById`).
+  - DB에 이미 저장되어 있다면 과거에 성공한 요청이므로 **기존 알람 정보를 그대로 반환(200 OK)**하여 우아하게 멱등성을 보장함.
+  - DB에 없다면 현재 다른 스레드가 방금 락을 잡고 처리 중인 것이므로 409 Conflict를 반환.
+
+#### 💻 적용 코드 예시 (핵심 요약)
+```kotlin
+// 1. 단기 동시성 방어 (Redis 락 선점)
+if (redisTemplate.setIfAbsent(idemKey, "PROCESSING", 5분) != true) {
+    // 2. 재처리 상태 확인: DB에 이미 반영되었는지 확인 (Source of Truth)
+    val existingAlarm = alarmRepository.findById(command.id)
+    if (existingAlarm != null) return existingAlarm
+    
+    throw ResponseStatusException(HttpStatus.CONFLICT, "처리 중입니다.")
+}
+
+try {
+    // 3. DB 저장 (알람, Outbox)
+    val savedAlarm = alarmRepository.save(Alarm.create(...))
+    alarmOutboxEventRepository.save(AlarmOutboxEvent.create(savedAlarm))
+    return savedAlarm
+} catch (e: Exception) {
+    // 4. 장애 복구 로직: DB 저장 실패 시 클라이언트가 즉시 재시도할 수 있도록 Redis 키 삭제
+    redisTemplate.delete(idemKey)
+    throw e
+}
+```
+
+<br>
+
+## 5. 기타 아키텍처 및 설정 보완 내역 (feature2 브랜치 반영분)
+
+main 브랜치의 기존 `README.md` 아키텍처 문서와 비교하여, 현재(feature2) 브랜치에서 추가적으로 고도화 및 보완된 사항들입니다.
+
+### 5.1 각 아키텍처 결정에 대한 실제 구현 코드 스니펫 추가
+기존 의사결정 내역들에 대해 실제 적용된 **코드 레벨의 증명(Code Snippets)**이 `README.md` 각 섹션 하단에 대폭 보강되었습니다.
+- **[3.4] Rate Limiting**: `redisRateLimiter.tryAcquire`를 통한 초당 500건 제어 로직 추가.
+- **[4.1] 큐 엔진**: `ack.acknowledge()` 수동 커밋을 통한 Kafka 장애 재처리 보장 로직 추가.
+- **[4.2 / 4.4] 동시성 제어**: `redisTemplate.setIfAbsent`를 활용한 분산 락 로직 및 실패 시 키 삭제(`delete`)를 통한 재시도 허용 로직 추가.
+- **[4.5] 에러 복구**: `WebClient`의 지수 백오프(`Retry.backoff`) 및 Kafka Retry Topic(`alarm-jobs-retry`) 재발행 로직 추가.
+
+### 5.2 신규 챕터: Kafka 브로커 메시지 유실 및 중복 저장 방지 (4.6)
+단일 브로커 및 기본 설정의 한계(메시지 유실 및 중복)를 해결하기 위한 인프라 레벨의 핵심 의사결정이 추가되었습니다.
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **메시지 유실**: `replication.factor=1` 상태에서 리더 브로커 장애 시, 팔로워에 복제되지 않은 메시지는 영구 유실됨.
+- **메시지 중복**: 프로듀서가 메시지를 보냈으나 네트워크 오류로 ACK를 못 받아 재전송할 경우, 브로커에 2건이 중복 저장되어 유저에게 알림이 2번 감.
+
+#### ⚖️ 대안 비교 및 결정
+- **결정**: 브로커 3대 클러스터링 기반의 **`replication.factor=3` + `min.insync.replicas=2` + `enable.idempotence=true`** 적용.
+- **기대 효과**: 리더 브로커가 죽어도 팔로워에 안전하게 메시지가 보존되며, 프로듀서의 재시도 시 브로커가 시퀀스 넘버(Sequence Number)를 통해 스스로 중복 저장을 차단함.
+
+#### 💻 적용 코드 예시 (핵심 요약)
+```kotlin
+// [KafkaConfig.kt] 토픽 생성 시 replication 및 ISR 설정
+TopicBuilder.name("alarm-jobs")
+    .partitions(3)
+    .replicas(3)  // 리더가 죽어도 팔로워에 데이터 보존
+    .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "2")  // 최소 2곳 저장 확인 후 ACK
+    .build()
+
+// [application.properties]
+// spring.kafka.producer.acks=all           ← enable.idempotence의 전제 조건
+// enable.idempotence=true (Kafka 3.0+ 기본값) ← 재시도 시 브로커 중복 적재 원천 차단
+```

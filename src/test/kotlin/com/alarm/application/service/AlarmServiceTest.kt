@@ -39,6 +39,7 @@ class AlarmServiceTest {
     private lateinit var alarmExecutionLogRepositoryPort: AlarmExecutionLogRepositoryPort
     private lateinit var notificationPort: NotificationPort
     private lateinit var messageQueuePort: MessageQueuePort
+    private lateinit var alarmOutboxEventRepositoryPort: AlarmOutboxEventRepositoryPort
     private lateinit var redisTemplate: StringRedisTemplate
     private lateinit var valueOps: ValueOperations<String, String>
     private lateinit var alarmService: AlarmService
@@ -59,6 +60,7 @@ class AlarmServiceTest {
         alarmExecutionLogRepositoryPort = mock(AlarmExecutionLogRepositoryPort::class.java)
         notificationPort = mock(NotificationPort::class.java)
         messageQueuePort = mock(MessageQueuePort::class.java)
+        alarmOutboxEventRepositoryPort = mock(AlarmOutboxEventRepositoryPort::class.java)
         redisTemplate = mock(StringRedisTemplate::class.java)
         valueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
@@ -69,89 +71,82 @@ class AlarmServiceTest {
             alarmExecutionLogRepositoryPort,
             notificationPort,
             messageQueuePort,
+            alarmOutboxEventRepositoryPort,
             redisTemplate
         )
     }
 
     /**
-     * [시나리오] 최초 알람 생성 시 DB에 저장되는 알람의 초기 상태를 검증합니다.
-     * [Given] 생성 명령 파라미터 준비 및 Redis 중복검사 통과 설정
-     * [When] 알람 생성 메서드 호출
-     * [Then] DB에 저장(save) 요청된 알람의 상태(status)가 PENDING인지 검증
+     * [시나리오 1] 단기 락 획득 성공 시, DB에 알람과 Outbox 이벤트를 정상 저장합니다.
      */
     @Test
-    fun `createAlarm - should save alarm with PENDING status in DB`() {
-        // Given
-        val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = "test-uuid-123",
-            senderId = "sender-1",
-            receiverId = "receiver-1",
-            name = "Test Alarm",
-            payload = "{}"
-        )
+    fun `createAlarm - should save alarm and outbox event when lock acquired`() {
+        val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
+        
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
+        `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
         
         val alarmCaptor = ArgumentCaptor.forClass(Alarm::class.java)
         `when`(alarmRepositoryPort.save(alarmCaptor.capture() ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
 
-        // When
         alarmService.createAlarm(command)
 
-        // Then
-        val savedAlarm = alarmCaptor.value
-        assertNotNull(savedAlarm)
-        assertEquals(AlarmStatus.PENDING, savedAlarm.status) // H2 DB 저장 시 PENDING 상태 검증
+        assertNotNull(alarmCaptor.value)
+        assertEquals(AlarmStatus.PENDING, alarmCaptor.value.status)
+        verify(alarmOutboxEventRepositoryPort).save(any())
     }
 
     /**
-     * [시나리오] 알람 생성 시 카프카 큐로 메시지가 정상 발행되는지 검증합니다.
-     * [Given] 생성 명령 파라미터 준비 및 Redis 중복검사 통과 설정
-     * [When] 알람 생성 메서드 호출
-     * [Then] MessageQueuePort의 publishAlarmJob이 호출되었는지 검증
+     * [시나리오 2] 단기 락 획득 실패(또는 락 만료 후 재진입) 하였으나, DB에 이미 저장된 결과가 있으면 기존 객체를 반환합니다. (멱등성 보장)
      */
     @Test
-    fun `createAlarm - should publish job to message queue`() {
-        // Given
-        val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = "test-uuid-123",
-            senderId = "sender-1",
-            receiverId = "receiver-1",
-            name = "Test Alarm",
-            payload = "{}"
-        )
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
-        `when`(alarmRepositoryPort.save(any(Alarm::class.java) ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
-
-        // When
-        alarmService.createAlarm(command)
-
-        // Then
-        verify(messageQueuePort).publishAlarmJob(any(Alarm::class.java) ?: dummyAlarm)
-    }
-
-    /**
-     * [시나리오] Redis에 이미 멱등키가 등록되어 있어 중복 생성 요청인 경우 예외 발생을 검증합니다.
-     * [Given] 중복 멱등키 인입 시 Redis setIfAbsent가 false를 반환하도록 설정
-     * [When] 알람 생성 메서드 호출
-     * [Then] ResponseStatusException(CONFLICT) 예외가 발생하는지 검증
-     */
-    @Test
-    fun `createAlarm - should throw CONFLICT exception on duplicate request`() {
-        // Given
-        val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = "test-uuid-123",
-            senderId = "sender-1",
-            receiverId = "receiver-1",
-            name = "Test Alarm",
-            payload = "{}"
-        )
+    fun `createAlarm - should return existing alarm if already saved in DB`() {
+        val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
+        
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
+        `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(dummyAlarm)
 
-        // When & Then
-        assertThrows<ResponseStatusException> {
+        val result = alarmService.createAlarm(command)
+
+        assertEquals("dummy-id", result.id) // 기존 객체 반환 확인
+        verify(alarmRepositoryPort, never()).save(any()) // 신규 저장 발생 안 함
+    }
+
+    /**
+     * [시나리오 3] 단기 락 획득 실패 시, DB에도 값이 없다면 다른 스레드가 방금 락을 잡고 처리 중인 것이므로 409 예외를 반환합니다. (따닥 방어)
+     */
+    @Test
+    fun `createAlarm - should throw CONFLICT if locked and DB is empty (Race Condition)`() {
+        val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
+        
+        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
+        `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
+
+        val ex = assertThrows<ResponseStatusException> {
             alarmService.createAlarm(command)
         }
-        verify(alarmRepositoryPort, never()).save(any(Alarm::class.java) ?: dummyAlarm)
+        
+        assertEquals(409, ex.statusCode.value())
+    }
+
+    /**
+     * [시나리오 4] DB 저장 과정에서 예외가 발생하면, 즉시 재시도 가능하도록 catch 블록에서 Redis 락을 해제합니다. (장애 복구)
+     */
+    @Test
+    fun `createAlarm - should delete Redis key if DB save fails`() {
+        val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
+        val idemKey = "idem:sender-1testuuid123"
+        
+        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
+        `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
+        `when`(alarmRepositoryPort.save(any())).thenThrow(RuntimeException("DB Connection Timeout"))
+
+        assertThrows<RuntimeException> {
+            alarmService.createAlarm(command)
+        }
+
+        // DB 장애 발생 시 즉시 Redis 키가 삭제되는지 검증!
+        verify(redisTemplate).delete(idemKey)
     }
 
     /**
