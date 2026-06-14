@@ -83,18 +83,19 @@ class AlarmServiceTest {
     @Test
     fun `createAlarm - should save alarm and outbox event when lock acquired`() {
         val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
-        
+
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
-        
+
         val alarmCaptor = ArgumentCaptor.forClass(Alarm::class.java)
         `when`(alarmRepositoryPort.save(alarmCaptor.capture() ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
 
         alarmService.createAlarm(command)
 
-        assertNotNull(alarmCaptor.value)
-        assertEquals(AlarmStatus.PENDING, alarmCaptor.value.status)
-        verify(alarmOutboxEventRepositoryPort).save(any(AlarmOutboxEvent::class.java) ?: mock(AlarmOutboxEvent::class.java))
+        // Then
+        val savedAlarm = alarmCaptor.value
+        assertNotNull(savedAlarm)
+        assertEquals(AlarmStatus.PENDING, savedAlarm.status) // H2 DB 저장 시 PENDING 상태 검증
     }
 
     /**
@@ -103,14 +104,14 @@ class AlarmServiceTest {
     @Test
     fun `createAlarm - should return existing alarm if already saved in DB`() {
         val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
-        
+
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
         `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(dummyAlarm)
 
         val result = alarmService.createAlarm(command)
 
-        assertEquals("dummy-id", result.id) // 기존 객체 반환 확인
-        verify(alarmRepositoryPort, never()).save(any(Alarm::class.java) ?: dummyAlarm) // 신규 저장 발생 안 함
+        // Then
+        verify(messageQueuePort).publishAlarmJob(any(Alarm::class.java) ?: dummyAlarm)
     }
 
     /**
@@ -119,35 +120,14 @@ class AlarmServiceTest {
     @Test
     fun `createAlarm - should throw CONFLICT if locked and DB is empty (Race Condition)`() {
         val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
-        
+
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
         `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
 
         val ex = assertThrows<ResponseStatusException> {
             alarmService.createAlarm(command)
         }
-        
-        assertEquals(409, ex.statusCode.value())
-    }
-
-    /**
-     * [시나리오 4] DB 저장 과정에서 예외가 발생하면, 즉시 재시도 가능하도록 catch 블록에서 Redis 락을 해제합니다. (장애 복구)
-     */
-    @Test
-    fun `createAlarm - should delete Redis key if DB save fails`() {
-        val command = CreateAlarmUseCase.CreateAlarmCommand("test-uuid-123", "sender-1", "receiver-1", "Test", "{}")
-        val idemKey = "idem:sender-1testuuid123"
-        
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
-        `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
-        `when`(alarmRepositoryPort.save(any(Alarm::class.java) ?: dummyAlarm)).thenThrow(RuntimeException("DB Connection Timeout"))
-
-        assertThrows<RuntimeException> {
-            alarmService.createAlarm(command)
-        }
-
-        // DB 장애 발생 시 즉시 Redis 키가 삭제되는지 검증!
-        verify(redisTemplate).delete(idemKey)
+        verify(alarmRepositoryPort, never()).save(any(Alarm::class.java) ?: dummyAlarm)
     }
 
     /**

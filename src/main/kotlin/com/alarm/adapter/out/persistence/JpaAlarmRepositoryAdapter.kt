@@ -42,6 +42,11 @@ class JpaAlarmRepositoryAdapter(
             .map { it.toDomain() }
     }
 
+    override fun findAllByIds(ids: List<String>): List<Alarm> {
+        return springDataAlarmRepository.findAllById(ids)
+            .map { it.toDomain() }
+    }
+
     override fun findAll(pageable: Pageable): Page<Alarm> {
         return springDataAlarmRepository.findAll(pageable)
             .map { it.toDomain() }
