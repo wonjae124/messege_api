@@ -34,12 +34,11 @@ class JpaAlarmRepositoryAdapter(
 
     override fun findById(id: String): Alarm? {
         return springDataAlarmRepository.findById(id)
-            .map { it.toDomain() }
-            .orElse(null)
+            ?.toDomain()
     }
 
     override fun findAllByIds(ids: List<String>): List<Alarm> {
-        return springDataAlarmRepository.findAllById(ids)
+        return springDataAlarmRepository.findAllByIdIn(ids)
             .map { it.toDomain() }
     }
 

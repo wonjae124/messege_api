@@ -11,6 +11,6 @@ import java.util.UUID
  * [관점] Outbound Infrastructure: Spring Data JPA 프레임워크 기술을 활용하여 알람 전송 실행 이력을 로깅하고 DB 물리 레이어에 접근합니다.
  */
 
-interface SpringDataAlarmExecutionLogRepository : JpaRepository<AlarmExecutionLogEntity, UUID> {
+interface SpringDataAlarmExecutionLogRepository : JpaRepository<AlarmExecutionLogEntity, Long> {
     fun findByAlarmId(alarmId: String): List<AlarmExecutionLogEntity>
 }

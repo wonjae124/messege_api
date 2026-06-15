@@ -120,6 +120,7 @@ class AlarmService(
                 AlarmStatus.PENDING -> alarm.markPending()
                 AlarmStatus.SENT -> alarm.sent()
                 AlarmStatus.FAILED -> alarm.fail()
+                else -> { /* no-op or handle other statuses if needed */ }
             }
         }
         return alarmRepositoryPort.save(alarm)

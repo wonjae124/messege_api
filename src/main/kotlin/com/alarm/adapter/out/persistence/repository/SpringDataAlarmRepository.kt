@@ -10,4 +10,7 @@ import org.springframework.data.jpa.repository.JpaRepository
  * [관점] Outbound Infrastructure: Spring Data JPA 프레임워크 기술을 활용하여 기본적인 CRUD 쿼리를 자동으로 처리하고 DB 물리 레이어에 접근합니다.
  */
 
-interface SpringDataAlarmRepository : JpaRepository<AlarmEntity, String>
+interface SpringDataAlarmRepository : JpaRepository<AlarmEntity, Long> {
+    fun findById(id: String): AlarmEntity?
+    fun findAllByIdIn(ids: List<String>): List<AlarmEntity>
+}

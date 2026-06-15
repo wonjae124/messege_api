@@ -16,6 +16,10 @@ import java.time.LocalDateTime
 @Table(name = "alarm_outbox_events")
 class AlarmOutboxEventEntity(
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val seq: Long? = null,
+
+    @Column(name = "id", nullable = false, unique = true)
     val id: String,
 
     @Column(name = "alarm_id", nullable = false)

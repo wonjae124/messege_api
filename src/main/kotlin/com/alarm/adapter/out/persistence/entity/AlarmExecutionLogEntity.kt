@@ -15,6 +15,10 @@ import java.util.UUID
 @Table(name = "alarm_execution_logs")
 class AlarmExecutionLogEntity(
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val seq: Long? = null,
+
+    @Column(name = "id", nullable = false, unique = true)
     val id: UUID,
 
     @Column(name = "alarm_id", nullable = false)

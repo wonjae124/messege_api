@@ -1,5 +1,6 @@
 package com.alarm.domain
 
+import com.github.f4b6a3.uuid.UuidCreator
 import java.time.LocalDateTime
 import java.util.UUID
 
@@ -23,7 +24,7 @@ class AlarmExecutionLog private constructor(
             errorMessage: String? = null
         ): AlarmExecutionLog {
             return AlarmExecutionLog(
-                id = UUID.randomUUID(),
+                id = UuidCreator.getTimeOrderedEpoch(),
                 alarmId = alarmId,
                 triggeredAt = LocalDateTime.now(),
                 status = status,

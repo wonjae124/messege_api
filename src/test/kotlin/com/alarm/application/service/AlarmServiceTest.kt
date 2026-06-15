@@ -4,6 +4,7 @@ import com.alarm.application.port.`in`.CreateAlarmUseCase
 import com.alarm.application.port.out.*
 import com.alarm.domain.Alarm
 import com.alarm.domain.AlarmExecutionLog
+import com.alarm.domain.AlarmOutboxEvent
 import com.alarm.domain.AlarmStatus
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -93,7 +94,7 @@ class AlarmServiceTest {
 
         assertNotNull(alarmCaptor.value)
         assertEquals(AlarmStatus.PENDING, alarmCaptor.value.status)
-        verify(alarmOutboxEventRepositoryPort).save(any())
+        verify(alarmOutboxEventRepositoryPort).save(any(AlarmOutboxEvent::class.java) ?: mock(AlarmOutboxEvent::class.java))
     }
 
     /**
@@ -109,7 +110,7 @@ class AlarmServiceTest {
         val result = alarmService.createAlarm(command)
 
         assertEquals("dummy-id", result.id) // 기존 객체 반환 확인
-        verify(alarmRepositoryPort, never()).save(any()) // 신규 저장 발생 안 함
+        verify(alarmRepositoryPort, never()).save(any(Alarm::class.java) ?: dummyAlarm) // 신규 저장 발생 안 함
     }
 
     /**
@@ -139,7 +140,7 @@ class AlarmServiceTest {
         
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         `when`(alarmRepositoryPort.findById("test-uuid-123")).thenReturn(null)
-        `when`(alarmRepositoryPort.save(any())).thenThrow(RuntimeException("DB Connection Timeout"))
+        `when`(alarmRepositoryPort.save(any(Alarm::class.java) ?: dummyAlarm)).thenThrow(RuntimeException("DB Connection Timeout"))
 
         assertThrows<RuntimeException> {
             alarmService.createAlarm(command)

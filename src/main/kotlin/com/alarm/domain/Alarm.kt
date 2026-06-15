@@ -1,7 +1,7 @@
 package com.alarm.domain
 
+import com.github.f4b6a3.uuid.UuidCreator
 import java.time.LocalDateTime
-import java.util.UUID
 
 /**
  * [파일명] Alarm.kt
@@ -22,7 +22,7 @@ class Alarm private constructor(
     companion object {
         // 신규 알람 생성
         fun create(
-            id: String = "12345" + UUID.randomUUID().toString().replace("-", ""),
+            id: String = "12345" + UuidCreator.getTimeOrderedEpoch().toString().replace("-", ""),
             senderId: String,
             receiverId: String,
             name: String,
