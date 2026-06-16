@@ -62,6 +62,10 @@ class Alarm private constructor(
         }
     }
 
+    fun isFinalStatus(): Boolean {
+        return this.status == AlarmStatus.SENT || this.status == AlarmStatus.FAILED || this.status == AlarmStatus.DEAD
+    }
+
     // 비즈니스 행위 메서드 (도메인 내에서 상태 전이 규칙 제어)
     fun markPending() {
         this.status = AlarmStatus.PENDING

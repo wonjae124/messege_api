@@ -30,17 +30,21 @@ import java.time.Duration
  */
 @Component
 class MockApiNotificationAdapter(
-    @Value("\${mock.api.url:http://localhost:8081}") private val mockApiUrl: String
+    @Value("\${mock.api.url:http://localhost:8081}") private val mockApiUrl: String,
+    @Value("\${mock.api.timeout.connect-millis:5000}") private val connectTimeoutMillis: Int,
+    @Value("\${mock.api.timeout.response-seconds:5}") private val responseTimeoutSeconds: Long,
+    @Value("\${mock.api.timeout.read-seconds:5}") private val readTimeoutSeconds: Int,
+    @Value("\${mock.api.timeout.write-seconds:5}") private val writeTimeoutSeconds: Int
 ) : NotificationPort {
 
     private val logger = LoggerFactory.getLogger(MockApiNotificationAdapter::class.java)
 
     private val httpClient = HttpClient.create()
-        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
-        .responseTimeout(Duration.ofSeconds(5))
+        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMillis)
+        .responseTimeout(Duration.ofSeconds(responseTimeoutSeconds))
         .doOnConnected { conn ->
-            conn.addHandlerLast(ReadTimeoutHandler(5))
-                .addHandlerLast(WriteTimeoutHandler(5))
+            conn.addHandlerLast(ReadTimeoutHandler(readTimeoutSeconds))
+                .addHandlerLast(WriteTimeoutHandler(writeTimeoutSeconds))
         }
 
     private val webClient = WebClient.builder()

@@ -28,8 +28,8 @@ class JpaAlarmOutboxEventRepositoryAdapter(
             .map { it.toDomain() }
     }
 
-    override fun findPendingEventsForUpdate(now: java.time.LocalDateTime): List<AlarmOutboxEvent> {
-        return springDataAlarmOutboxEventRepository.findPendingEventsForUpdate(now)
+    override fun findPendingEventsForUpdate(now: java.time.LocalDateTime, limit: Int): List<AlarmOutboxEvent> {
+        return springDataAlarmOutboxEventRepository.findPendingEventsForUpdate(now, limit)
             .map { it.toDomain() }
     }
 }

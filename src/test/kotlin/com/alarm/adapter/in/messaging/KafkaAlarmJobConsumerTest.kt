@@ -107,7 +107,7 @@ class KafkaAlarmJobConsumerTest {
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
 
         // When
-        consumer.consumeAlarmJob(payload, 1)
+        consumer.consumeAlarmJob(payload, 1).join()
 
         // Then
         // H2 DB 상태 업데이트 시 SENT(Done) 상태로 업데이트되는지 검증
@@ -127,8 +127,8 @@ class KafkaAlarmJobConsumerTest {
         // Given
         val payload1 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
         val payload2 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
-        // 두 메시지가 동일한 proc 키를 공유함: proc:sender-1uuid-dup
-        val procKey = "proc:sender-1uuid-dup"
+        // 두 메시지가 동일한 proc 키를 공유함: proc:sender-1:uuid-dup
+        val procKey = "proc:sender-1:uuid-dup"
 
         // 첫 번째 선점 시도: true (성공)
         // 두 번째 선점 시도: false (이미 선점됨 = 중복)
@@ -139,8 +139,12 @@ class KafkaAlarmJobConsumerTest {
         `when`(valueOps.get(eq(procKey))).thenReturn("PROCESSING")
 
         // When
-        consumer.consumeAlarmJob(payload1, 1)
-        consumer.consumeAlarmJob(payload2, 1)
+        consumer.consumeAlarmJob(payload1, 1).join()
+        
+        // 두 번째 중복 작업은 ConcurrentProcessingException을 던져서 Kafka 재시도를 타야 함
+        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payload2, 1).join()
+        }
 
         // Then
         // ArgumentCaptor 캐스팅 없이 호출 횟수(1회)만 verify → Kotlin null-safety 문제 없음
@@ -154,21 +158,19 @@ class KafkaAlarmJobConsumerTest {
      * [Then] DB H2에 FAILED 업데이트 요청 및 에러 로그 일괄(saveAll) 저장이 일어나는지 검증
      */
     @Test
-    fun `should update RDB H2 status to FAILED and record log on execution failure`() {
+    fun `should update RDB H2 status to DEAD and record log on max execution failure`() {
         // Given
         val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-fail"}"""
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.error(RuntimeException("Connection lost")))
 
         // When
-        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException::class.java) {
-            consumer.consumeAlarmJob(payload, 4)
-        }
+        consumer.consumeAlarmJob(payload, 4).join()
 
         // Then
-        // 1. H2 DB에 FAILED 상태로 일괄 업데이트되는지 검증
-        verify(alarmRepositoryPort).updateStatusesInBatch(listOf(12345L), AlarmStatus.FAILED)
-        // 2. FAILED 실행 로그가 save로 저장되는지 검증
+        // 1. H2 DB에 DEAD 상태로 일괄 업데이트되는지 검증
+        verify(alarmRepositoryPort).updateStatusesInBatch(listOf(12345L), AlarmStatus.DEAD)
+        // 2. 실행 로그가 save로 저장되는지 검증
         verify(alarmExecutionLogRepositoryPort).save(anyObject(AlarmExecutionLog::class.java))
     }
 
@@ -187,7 +189,7 @@ class KafkaAlarmJobConsumerTest {
         // Given
         // 3개의 알람 메시지 생성
         val payloads = List(3) { index ->
-            """{"alarmId":"alarm-$index","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-$index"}"""
+            """{"alarmId":"${12340 + index}","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-$index"}"""
         }
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
 
@@ -204,7 +206,7 @@ class KafkaAlarmJobConsumerTest {
         }
 
         // When
-        payloads.forEach { consumer.consumeAlarmJob(it, 1) }
+        payloads.forEach { consumer.consumeAlarmJob(it, 1).join() }
 
         // Then
         // 총 호출 횟수: 

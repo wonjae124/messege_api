@@ -471,3 +471,61 @@ fun consumeAlarmJob(
     .toFuture() // CompletableFuture로 변환하여 Spring Kafka로 핸오버
 }
 ```
+
+<br>
+
+## 10. 데이터 액세스 기술(JPA/JDBC)의 블로킹 제약 극복 및 격리 설계
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **리액티브 파이프라인과 동기 블로킹 JPA/JDBC의 공존**: Kafka 리스너(`KafkaAlarmJobConsumer`)는 리액티브 논블로킹 스트림으로 설계되었으나, 실제 상태 전이 및 로깅을 저장하는 영속성 기술은 동기 블로킹 방식의 **Spring Data JPA 및 JDBC(H2/MySQL)**를 사용하고 있음.
+- **이벤트 루프 스레드 고갈(Thread Starvation) 장애**:
+  - 리액터 이벤트 루프 스레드는 소수의 스레드로 다량의 비동기 작업을 빠르게 돌려야 함.
+  - 이 스레드가 DB 조회(`findById`), 상태 수정(`updateStatusesInBatch`), 실행 이력 저장(`save`) 등의 블로킹 JDBC IO 작업에 직접 가담하게 되면, 스레드가 묶여서(Blocked) 다른 비동기 네트워크 IO(Netty 수신 등)도 모두 멈추는 **어플리케이션 전체 불능 상태(I/O 마비)**로 번질 수 있음.
+
+---
+
+#### ⚖️ 대안 비교 및 결정
+
+**A안: 전체 데이터 액세스 레이어를 R2DBC(논블로킹)로 전환**
+- **방식**: Spring Data JPA(Hibernate)를 완전히 제거하고 Spring Data R2DBC 및 R2DBC 비동기 드라이버를 도입.
+- **장점**: 전체 파이프라인에서 단 하나의 스레드 블로킹도 없는 완벽한 Non-blocking Reactive 애플리케이션 달성.
+- **단점**: 엔티티 생명주기 관리, 더티 체킹, 연관 관계 매핑(Lazy Loading 등)과 같이 JPA가 주던 막강한 영속성 관리 기능을 잃게 됨. 리포지토리 레이어의 전면 재작성 오버헤드와 트랜잭션 전파 제어의 복잡도가 극도로 증가함.
+
+**B안: Schedulers.boundedElastic() 기반의 스레드 풀 격리 (선택)**
+- **방식**: 기존의 안정적인 JPA 영속성 아키텍처를 그대로 유지하되, 리액티브 체인 상에서 블로킹 RDB IO 연산이 실행되는 구간에만 `.publishOn(Schedulers.boundedElastic())`을 결합하여 스레드 풀을 격리(Thread-pool Isolation)함.
+- **장점**: 
+  - 기존의 검증된 JPA/JDBC 영속성 코드를 안전하게 재활용.
+  - 블로킹 작업이 시작되는 시점에 Reactor의 별도 백그라운드 스레드 풀(`boundedElastic`)로 스레드 제어권이 넘어가므로, 실제 동기식 DB 작업이 스레드를 붙잡아도 소중한 **리액티브 이벤트 루프 스레드는 즉시 풀려나 다른 논블로킹 I/O를 멈춤 없이 계속 처리**할 수 있음.
+
+---
+
+#### ✅ 결정: B안 (Schedulers.boundedElastic 스레드 풀 격리 채택)
+- **의사결정 사유**: 
+  - 영속성 제어(JPA)의 안정성 및 생산성 가치와 리액티브 아키텍처의 고성능 가치를 조화롭게 타협하는 가장 실용적이고도 **Spring Reactor 진영의 권장 표준(Best Practice)**이기 때문입니다.
+  - 이를 통해 드라이버 레벨의 근본적인 블로킹 한계를 안전하게 격리하여 애플리케이션의 전체적 고사(Starvation) 장애를 방지했습니다.
+
+#### ❌ 포기한 것
+- **완벽한 Non-blocking 아키텍처 (R2DBC)**: RDB 접근 시점의 스레드 블로킹 자체를 근본적으로 없애는 것은 포기했습니다. 이는 JPA가 제공하는 영속성 관리와 기존 코드의 안정성을 취하기 위함입니다.
+- **단일 스레드 풀 모델의 단순성**: 리액티브 워커 스레드와 JDBC 블로킹 스레드 풀이 분리됨으로써, 트랜잭션 전파 및 스레드 로컬(ThreadLocal, MDC 등) 동기화 코드가 다소 복잡해졌습니다.
+
+#### 🎁 얻은 것
+- **이벤트 루프 Starvation 원천 방지**: DB 블로킹 작업이 별도 스레드 풀(`boundedElastic`)에서 수행되므로, 외부 API 통신 등을 담당하는 핵심 리액티브 스레드가 멈추는 장애를 막았습니다.
+- **생산성과 성능의 타협점 도출**: R2DBC 전면 전환이라는 막대한 비용 없이, 기존 JPA 레거시의 생산성을 유지하면서도 Kafka 컨슈머의 논블로킹 고성능 파이프라인을 유지할 수 있었습니다.
+
+---
+
+#### 💻 적용 코드 예시 (핵심 요약)
+```kotlin
+val future = acquireTokenReactive()
+    .then(Mono.defer {
+        notificationPort.sendNotification(listOf(batchItem))
+    })
+    .publishOn(Schedulers.boundedElastic()) // 1. 블로킹 JPA/JDBC 처리를 위해 boundedElastic 스레드 풀로 전환
+    .then(Mono.defer { // 2. 격리된 스레드에서 블로킹 DB 동기 로직 안전하게 수행
+        val elapsedTime = System.currentTimeMillis() - startTime
+        redisTemplate.opsForValue().set(procKey, "DONE", Duration.ofMinutes(3))
+        alarmRepositoryPort.updateStatusesInBatch(listOf(alarmIdLong), AlarmStatus.SENT)
+        alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(...))
+        Mono.empty<Void>()
+    })
+```

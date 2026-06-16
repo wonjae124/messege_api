@@ -38,6 +38,6 @@ class KafkaAlarmJobProducer(
         
         val payload = """{"alarmId":"${event.alarmId}","senderId":"${event.senderId}","receiverId":"${event.receiverId}","uuid":"${event.uuid}","requestId":${if (requestId != null) "\"$requestId\"" else "null"},"traceId":${if (traceId != null) "\"$traceId\"" else "null"},"retryCount":0}"""
         
-        kafkaTemplate.send("alarm-jobs", partitionKey, payload)
+        kafkaTemplate.send("alarm-jobs", partitionKey, payload).get(5, java.util.concurrent.TimeUnit.SECONDS)
     }
 }

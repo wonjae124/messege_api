@@ -8,6 +8,8 @@ import com.alarm.adapter.out.notification.RedisRateLimiter
 import com.alarm.domain.AlarmExecutionLog
 import com.alarm.domain.AlarmStatus
 import com.alarm.exception.ExternalApiException
+import com.alarm.exception.AlarmNotFoundException
+import com.alarm.exception.ConcurrentProcessingException
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
@@ -20,11 +22,12 @@ import java.time.Duration
 import java.time.LocalDateTime
 import java.util.concurrent.CompletableFuture
 import reactor.core.publisher.Mono
+import reactor.core.scheduler.Schedulers
 
 /**
  * [파일명] KafkaAlarmJobConsumer.kt
- * [기능] Kafka 비동기 알람 메시지 배치 소비 및 전송 처리, 실제 비즈니스 로직 수행함.
- * [관점] Inbound Adapter: 카프카 큐 이벤트 스트림(Inbound Event)을 구독하여 외부 API 일괄 호출 및 DB 벌크/배치 업데이트(JdbcTemplate)를 연동하고 멱등 처리를 보장합니다.
+ * [기능] Kafka 비동기 알람 메시지 소비 및 전송 처리, 실제 비즈니스 로직 수행함.
+ * [관점] Inbound Adapter: 카프카 큐 이벤트를 구독하여 외부 API 호출 및 DB 업데이트를 연동하고 멱등 처리를 보장합니다.
  */
 @Component
 class KafkaAlarmJobConsumer(
@@ -46,6 +49,26 @@ class KafkaAlarmJobConsumer(
         val traceId: String? = null
     )
 
+    // 리액티브 논블로킹 속도 제한 획득 헬퍼 함수
+    private fun acquireTokenReactive(retries: Int = 50): Mono<Void> {
+        return Mono.fromCallable {
+            redisRateLimiter.tryAcquire(1)
+        }
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMap { acquired ->
+            if (acquired) {
+                Mono.empty<Void>()
+            } else {
+                if (retries <= 0) {
+                    Mono.error(RuntimeException("Rate limit token acquisition timeout"))
+                } else {
+                    Mono.delay(Duration.ofMillis(100))
+                        .then(Mono.defer { acquireTokenReactive(retries - 1) })
+                }
+            }
+        }
+    }
+
     @KafkaListener(
         topics = ["alarm-jobs"],
         groupId = "\${spring.kafka.consumer.group-id:alarm_api_consumer_group}",
@@ -59,76 +82,98 @@ class KafkaAlarmJobConsumer(
         logger.info("Processing alarm job event: attempt={}", attempt)
 
         val parsedPayload: AlarmJobPayload
+        val alarmIdLong: Long
         try {
             parsedPayload = objectMapper.readValue(payloadStr, AlarmJobPayload::class.java)
+            alarmIdLong = parsedPayload.alarmId.toLong()
         } catch (e: Exception) {
-            logger.error("Unexpected error parsing payload", e)
+            logger.error("Unexpected error parsing payload or invalid alarmId: {}", payloadStr, e)
             val future = CompletableFuture<Void?>()
             future.completeExceptionally(e)
             return future
         }
 
-        MDC.put("requestId", parsedPayload.requestId ?: "unknown")
-        val procKey = "proc:${parsedPayload.senderId}${parsedPayload.uuid}"
+        val requestId = parsedPayload.requestId ?: "unknown"
+        MDC.put("requestId", requestId)
+        val procKey = "proc:${parsedPayload.senderId}:${parsedPayload.uuid}"
 
-        // 1. 소비 단계 멱등성 체크 (Redis proc:)
+        // 1. 소비 단계 1차 RDB 멱등성 검증 (Double-Checked Locking) - Redis 락 경합 최소화
+        val alarmInit = alarmRepositoryPort.findById(alarmIdLong)
+        if (alarmInit != null && alarmInit.isFinalStatus()) {
+            logger.info("DCL (RDB) 1st duplicate check triggered: alarm {} is already in final status {}. Skipping.", alarmIdLong, alarmInit.status)
+            redisTemplate.opsForValue().set(procKey, "DONE", Duration.ofMinutes(3))
+            MDC.clear()
+            return CompletableFuture.completedFuture(null)
+        }
+
+        // 2. 소비 단계 분산 락 선점 (Redis proc:)
         val isFirstProcessing = redisTemplate.opsForValue().setIfAbsent(procKey, "PROCESSING", Duration.ofMinutes(3))
         if (isFirstProcessing != true) {
             val status = redisTemplate.opsForValue().get(procKey)
-            if (status == "DONE" || status == "PROCESSING") {
-                logger.info("Duplicate Kafka job detected and ignored: alarmId = {}", parsedPayload.alarmId)
+            if (status == "DONE") {
+                logger.info("Duplicate Kafka job detected and ignored: alarmId = {}", alarmIdLong)
+                MDC.clear()
                 return CompletableFuture.completedFuture(null)
             }
-            redisTemplate.opsForValue().set(procKey, "PROCESSING", Duration.ofMinutes(3))
-        }
-
-        // 2. 외부 알림 발송 전 레이트 리밋 제어
-        while (!redisRateLimiter.tryAcquire(1)) {
-            try {
-                Thread.sleep(100)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                val future = CompletableFuture<Void?>()
-                future.completeExceptionally(e)
-                return future
-            }
-        }
-
-        val alarmIdLong = parsedPayload.alarmId.toLong()
-        val alarm = alarmRepositoryPort.findById(alarmIdLong)
-        if (alarm == null) {
-            redisTemplate.delete(procKey)
+            // PROCESSING 이거나 락이 점유된 경우
+            logger.info("Job currently processing or lock held: alarmId = {}", alarmIdLong)
+            MDC.clear()
             val future = CompletableFuture<Void?>()
-            future.completeExceptionally(com.alarm.exception.AlarmNotFoundException("알람을 찾을 수 없습니다: $alarmIdLong"))
+            future.completeExceptionally(ConcurrentProcessingException("Alarm job is already processing or lock is held: $alarmIdLong"))
             return future
         }
 
-        alarm.processing()
-        alarmRepositoryPort.save(alarm)
+        // 락 선점 이후, 동기 구간을 try-catch로 감싸 비동기 체인 위임 전 예외 시 락 해제 및 MDC 클리어 보장
+        val batchItem: AlarmBatchItem
+        try {
+            // 3. 소비 단계 2차 RDB 멱등성 검증 (Double-Checked Locking)
+            val alarm = alarmRepositoryPort.findById(alarmIdLong)
+            if (alarm == null) {
+                throw AlarmNotFoundException("알람을 찾을 수 없습니다: $alarmIdLong")
+            }
+            if (alarm.isFinalStatus()) {
+                logger.info("DCL (RDB) 2nd duplicate check triggered: alarm {} is already in final status {}. Skipping.", alarmIdLong, alarm.status)
+                redisTemplate.opsForValue().set(procKey, "DONE", Duration.ofMinutes(3))
+                MDC.clear()
+                return CompletableFuture.completedFuture(null)
+            }
 
-        val batchItem = AlarmBatchItem(
-            alarmId = alarm.id,
-            senderId = alarm.senderId,
-            receiverId = alarm.receiverId,
-            channelType = alarm.channelType,
-            uuidClean = parsedPayload.uuid,
-            payload = alarm.payload
-        )
+            alarm.processing()
+            alarmRepositoryPort.save(alarm)
+
+            batchItem = AlarmBatchItem(
+                alarmId = alarm.id,
+                senderId = alarm.senderId,
+                receiverId = alarm.receiverId,
+                channelType = alarm.channelType,
+                uuidClean = parsedPayload.uuid,
+                payload = alarm.payload
+            )
+        } catch (e: Exception) {
+            redisTemplate.delete(procKey)
+            MDC.clear()
+            val future = CompletableFuture<Void?>()
+            future.completeExceptionally(e)
+            return future
+        }
 
         val startTime = System.currentTimeMillis()
 
-        // 3. 비동기 리액티브 파이프라인 연동 (Non-blocking)
-        val future = notificationPort.sendNotification(listOf(batchItem))
-            .doOnSuccess {
+        // 4. 비동기 리액티브 파이프라인 연동 (Non-blocking 토큰 획득 -> 발송 -> boundedElastic 스케줄러 전환 -> 결과 저장)
+        val future = acquireTokenReactive()
+            .then(Mono.defer {
+                notificationPort.sendNotification(listOf(batchItem))
+            })
+            .publishOn(Schedulers.boundedElastic()) // 블로킹 RDB I/O 격리
+            .then(Mono.defer {
                 val elapsedTime = System.currentTimeMillis() - startTime
-                // 성공 시 Redis 및 DB 상태 갱신
                 redisTemplate.opsForValue().set(procKey, "DONE", Duration.ofMinutes(3))
                 alarmRepositoryPort.updateStatusesInBatch(listOf(alarmIdLong), AlarmStatus.SENT)
 
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
-                    alarmId = parsedPayload.alarmId,
+                    alarmId = alarmIdLong.toString(),
                     status = "SUCCESS",
-                    requestId = parsedPayload.requestId ?: "unknown",
+                    requestId = requestId,
                     traceId = parsedPayload.traceId,
                     channel = "KAFKA",
                     receiver = parsedPayload.receiverId,
@@ -139,12 +184,16 @@ class KafkaAlarmJobConsumer(
                     lastRetryAt = if (attempt > 1) LocalDateTime.now() else null,
                     maxRetryExceeded = false
                 ))
-            }
+                Mono.empty<Void>()
+            })
             .onErrorResume { e ->
                 val elapsedTime = System.currentTimeMillis() - startTime
-                logger.error("Failed to execute API call for alarm", e)
+                // 리액터 스레드 임시 MDC 로깅 설정
+                MDC.put("requestId", requestId)
+                logger.error("Failed to execute API call for alarm: alarmId = {}", alarmIdLong, e)
+                MDC.clear()
 
-                // 실패 시 procKey 삭제하여 다음 재시도 가능하게 함
+                // 실패 시 락을 해제하여 다음 재시도를 가능하게 함
                 redisTemplate.delete(procKey)
 
                 val statusCode = if (e is ExternalApiException) e.statusCode else 500
@@ -159,13 +208,13 @@ class KafkaAlarmJobConsumer(
                     Triple(AlarmStatus.RETRY_WAIT, "RETRY_WAIT", "RETRY_WAIT")
                 }
 
+                // boundedElastic에서 DB 작업 수행
                 alarmRepositoryPort.updateStatusesInBatch(listOf(alarmIdLong), targetStatus)
-
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
-                    alarmId = parsedPayload.alarmId,
+                    alarmId = alarmIdLong.toString(),
                     status = logStatus,
                     errorMessage = e.message,
-                    requestId = parsedPayload.requestId ?: "unknown",
+                    requestId = requestId,
                     traceId = parsedPayload.traceId,
                     channel = "KAFKA",
                     receiver = parsedPayload.receiverId,
@@ -174,11 +223,11 @@ class KafkaAlarmJobConsumer(
                     elapsedTimeMs = elapsedTime,
                     resultStatus = logResultStatus,
                     lastRetryAt = LocalDateTime.now(),
-                    maxRetryExceeded = isMaxExceeded || is4xxClientError
+                    maxRetryExceeded = isMaxExceeded
                 ))
 
-                if (is4xxClientError) {
-                    // 4xx client 에러인 경우 재시도하지 않도록 Mono.empty() 반환 (성공 처리로 흐름 종결)
+                if (is4xxClientError || isMaxExceeded) {
+                    // 재시도가 불가능한 최종 상태인 경우, 예외를 던지지 않고 정상 완료하여 Kafka 추가 재시도 방지
                     Mono.empty()
                 } else {
                     Mono.error(e)
@@ -186,9 +235,9 @@ class KafkaAlarmJobConsumer(
             }
             .toFuture()
 
-        // 4. 비동기 리턴 및 MDC 정리
+        // 5. 비동기 리턴 및 카프카 스레드 MDC 정리
+        MDC.clear()
         return future.handle { _, throwable ->
-            MDC.clear()
             if (throwable != null) {
                 throw throwable
             }

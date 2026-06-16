@@ -1,74 +1,101 @@
 spring:
   application:
     name: alarm
+  
+  # 데이터베이스 연결 설정 (JPA/JDBC)
   datasource:
     url: ${DB_URL:jdbc:h2:mem:alarmdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
     driver-class-name: ${DB_DRIVER:org.h2.Driver}
     username: ${DB_USERNAME:sa}
     password: ${DB_PASSWORD:}
     hikari:
-      maximum-pool-size: ${HIKARI_MAX_POOL:10}
-      minimum-idle: ${HIKARI_MIN_IDLE:5}
-      connection-timeout: 30000
-      idle-timeout: 600000
+      maximum-pool-size: ${HIKARI_MAX_POOL:10} # 커넥션 풀 최대 크기
+      minimum-idle: ${HIKARI_MIN_IDLE:5}       # 유지할 최소 유휴 커넥션 개수
+      connection-timeout: 30000                # 커넥션을 얻기 위해 대기하는 최대 시간 (ms)
+      idle-timeout: 600000                     # 유휴 커넥션이 풀에서 제거되기 전 대기 시간 (ms)
+  
+  # JPA (Hibernate) 설정
   jpa:
     database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
-      ddl-auto: update
-    show-sql: false
+      ddl-auto: update                         # 애플리케이션 시작 시 엔티티 기반 스키마 자동 갱신
+    show-sql: false                            # 콘솔에 SQL 로그 출력 여부
     properties:
       hibernate:
         connection:
-          isolation: 2  # READ_COMMITTED
+          isolation: 2  # 트랜잭션 격리 수준 (2: READ_COMMITTED)
+  
+  # H2 인메모리 DB 콘솔 설정
   h2:
     console:
-      enabled: ${H2_CONSOLE_ENABLED:false}
+      enabled: ${H2_CONSOLE_ENABLED:false}     # /h2-console 엔드포인트 활성화 여부
       path: /h2-console
+  
+  # Kafka 연동 설정
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092} # 카프카 브로커 주소
     consumer:
-      group-id: alarm_api_consumer_group
-      auto-offset-reset: earliest
+      group-id: alarm_api_consumer_group       # 알람 컨슈머 그룹 ID
+      auto-offset-reset: earliest              # 초기 오프셋이 없을 때 가장 처음부터 읽기
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
-        interceptor.classes: com.alarm.config.KafkaRequestIdInterceptor
+        interceptor.classes: com.alarm.config.KafkaRequestIdInterceptor # 분산 추적(MDC)을 위한 인터셉터
+  
+  # Redis 연동 설정 (분산 락, 속도 제한 등에 사용)
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
+# 외부 연동 API (Mock API) 설정
 mock:
   api:
-    url: ${MOCK_API_URL:http://localhost:8080/mock-external}
+    url: ${MOCK_API_URL:http://localhost:8080/mock-external} # 대상 외부 API 주소
+    timeout:
+      connect-millis: 5000     # 커넥션 연결 타임아웃 (밀리초)
+      response-seconds: 5      # 전체 HTTP 응답 대기 타임아웃 (초)
+      read-seconds: 4          # 읽기 타임아웃 (초) - 외부 지연 발생 시 빠른 실패 유도
+      write-seconds: 5         # 쓰기 타임아웃 (초)
 
+# 모니터링 및 Actuator 설정
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        include: health,info,prometheus,metrics # 노출할 엔드포인트 목록
   metrics:
     export:
       prometheus:
-        enabled: true
+        enabled: true          # 프로메테우스 메트릭 수집 허용
     tags:
-      application: alarm-api
+      application: alarm-api   # 메트릭 식별용 태그
   tracing:
     sampling:
-      probability: 1.0
+      probability: 1.0         # 분산 추적 샘플링 비율 (1.0 = 100% 수집)
 
+# OpenTelemetry 분산 추적 데이터 전송 대상
 otel:
   exporter:
     otlp:
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
 
+# 알람 애플리케이션 전용 비즈니스 로직 제어 파라미터
 alarm:
+  outbox:
+    batch-size: 100            # 스케줄러 1회 동작 시 폴링하여 처리할 PENDING 이벤트 최대 개수
+  
+  rate-limiter:
+    capacity: 500              # Token Bucket 알고리즘: 담아둘 수 있는 최대 호출 횟수
+    refill-rate: 500           # 1주기 동안 채워질 토큰(호출 권한) 개수
+    refill-period-seconds: 1   # 리필 주기 (기본: 1초마다 500개씩 리필)
+  
   circuit-breaker:
-    failure-rate-threshold: 50
-    sliding-window-size: 10
-    wait-duration-in-open-state: 30s
-    slow-call-duration-threshold: 3s
-    slow-call-rate-threshold: 80
+    failure-rate-threshold: 50          # 에러 발생률이 50%를 넘으면 서킷 브레이커 OPEN (요청 차단)
+    sliding-window-size: 10             # 최근 10번의 호출을 기준으로 에러율 계산
+    wait-duration-in-open-state: 30s    # OPEN 상태가 된 후, 다시 HALF_OPEN(시험 호출)으로 전환되기까지 대기 시간
+    slow-call-duration-threshold: 3s    # 3초 이상 지연된 응답을 느린 호출(Slow Call)로 간주
+    slow-call-rate-threshold: 80        # 느린 호출 비율이 80% 이상이어도 서킷 브레이커 OPEN

@@ -16,8 +16,11 @@ interface SpringDataAlarmOutboxEventRepository : JpaRepository<AlarmOutboxEventE
     fun findAllByStatus(status: OutboxStatus): List<AlarmOutboxEventEntity>
 
     @Query(
-        value = "SELECT * FROM alarm_outbox_events WHERE status = 'PENDING' AND next_retry_at <= :now FOR UPDATE SKIP LOCKED",
+        value = "SELECT * FROM alarm_outbox_events WHERE status = 'PENDING' AND next_retry_at <= :now FOR UPDATE SKIP LOCKED LIMIT :limit",
         nativeQuery = true
     )
-    fun findPendingEventsForUpdate(@Param("now") now: java.time.LocalDateTime): List<AlarmOutboxEventEntity>
+    fun findPendingEventsForUpdate(
+        @Param("now") now: java.time.LocalDateTime,
+        @Param("limit") limit: Int
+    ): List<AlarmOutboxEventEntity>
 }

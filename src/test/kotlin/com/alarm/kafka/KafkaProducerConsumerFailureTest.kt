@@ -121,7 +121,7 @@ class KafkaProducerConsumerFailureTest {
      */
     @Test
     @Suppress("UNCHECKED_CAST")
-    fun `consumer should save FAILED status when sendNotification throws exception`() {
+    fun `consumer should save RETRY_WAIT status when sendNotification throws exception`() {
         // Given: sendNotification이 예외를 발생시키도록 설정
         Mockito.`when`(notificationPort.sendNotification(anyList()))
             .thenReturn(Mono.error(RuntimeException("외부 API 타임아웃")))
@@ -138,17 +138,17 @@ class KafkaProducerConsumerFailureTest {
         val alarmId = objectMapper.readTree(result.response.contentAsString).get("id").asText()
 
         // When: Consumer 비동기 처리 대기 (최대 5초)
-        // Then: H2 DB에서 알람 상태가 FAILED로 갱신되었는지 폴링 검증
-        var isFailed = false
+        // Then: H2 DB에서 알람 상태가 RETRY_WAIT로 갱신되었는지 폴링 검증
+        var isRetryWait = false
         for (i in 1..50) {
             val alarm = alarmRepositoryPort.findById(alarmId.toLong())
-            if (alarm?.status == AlarmStatus.FAILED) {
-                isFailed = true
+            if (alarm?.status == AlarmStatus.RETRY_WAIT) {
+                isRetryWait = true
                 break
             }
             Thread.sleep(100)
         }
-        assertTrue(isFailed, "sendNotification 예외 발생 시 알람 상태가 5초 내 FAILED로 갱신되어야 합니다.")
+        assertTrue(isRetryWait, "sendNotification 예외 발생 시 알람 상태가 5초 내 RETRY_WAIT로 갱신되어야 합니다.")
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ class KafkaProducerConsumerFailureTest {
      */
     @Test
     @Suppress("UNCHECKED_CAST")
-    fun `consumer should update status to FAILED when max retries are exceeded`() {
+    fun `consumer should update status to DEAD when max retries are exceeded`() {
         // Given: 소비자 직접 구성
         val mockAlarmRepo = mock(AlarmRepositoryPort::class.java)
         val mockLogRepo = mock(AlarmExecutionLogRepositoryPort::class.java)
@@ -197,10 +197,8 @@ class KafkaProducerConsumerFailureTest {
 
         val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-retry"}"""
 
-        // When: 4번째 실패 시도 (maxAttempts = 4)를 직접 호출하여 최종 실패 상황을 재현
-        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
-            consumer.consumeAlarmJob(payload, 4).join()
-        }
+        // When: 4번째 실패 시도 (maxAttempts = 4)를 직접 호출하여 최종 실패 상황을 재현 (DEAD이므로 예외 없이 완료됨)
+        consumer.consumeAlarmJob(payload, 4).join()
 
         // Then: DEAD 상태로 DB 업데이트가 검증되어야 함 (최대 시도 초과)
         verify(mockAlarmRepo).updateStatusesInBatch(listOf(12345L), AlarmStatus.DEAD)
@@ -228,7 +226,7 @@ class KafkaProducerConsumerFailureTest {
         val mockRateLimiter = mock(RedisRateLimiter::class.java)
         val mockValueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
-        val procKey = "proc:sender-Auuid-SAME"
+        val procKey = "proc:sender-A:uuid-SAME"
         `when`(mockRedis.opsForValue()).thenReturn(mockValueOps)
         `when`(mockRateLimiter.tryAcquire(anyInt())).thenReturn(true)
         `when`(mockNotification.sendNotification(anyList())).thenReturn(Mono.empty())
@@ -262,7 +260,11 @@ class KafkaProducerConsumerFailureTest {
 
         // When
         consumer.consumeAlarmJob(payload1, 1).join()
-        consumer.consumeAlarmJob(payload2, 1).join()
+        
+        // 두 번째 중복 작업은 ConcurrentProcessingException을 던져서 Kafka 재시도를 타야 함
+        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payload2, 1).join()
+        }
 
         // Then: 중복 건 제외 → sendNotification은 정확히 1회만 호출
         verify(mockNotification, times(1)).sendNotification(anyList())
@@ -393,8 +395,12 @@ class KafkaProducerConsumerFailureTest {
         val payload2 = """{"alarmId":"10005","senderId":"sender-2","receiverId":"receiver-2","uuid":"uuid-dup-2"}"""
 
         // When
-        consumer.consumeAlarmJob(payload1, 1).join()
-        consumer.consumeAlarmJob(payload2, 1).join()
+        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payload1, 1).join()
+        }
+        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payload2, 1).join()
+        }
 
         // Then: sendNotification은 한 번도 호출되지 않아야 함
         verify(mockNotification, never()).sendNotification(anyList())
