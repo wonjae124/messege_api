@@ -96,7 +96,7 @@ class AlarmKafkaIntegrationTest {
         // 3. 비동기 발생 후 최종 상태가 SENT로 자동 변경되었는지 검증 (최대 5초 대기/폴링)
         var statusIsSent = false
         for (i in 1..50) {
-            val savedAlarm = alarmRepositoryPort.findById(alarmId)
+            val savedAlarm = alarmRepositoryPort.findById(alarmId.toLong())
             if (savedAlarm?.status == AlarmStatus.SENT) {
                 statusIsSent = true
                 break

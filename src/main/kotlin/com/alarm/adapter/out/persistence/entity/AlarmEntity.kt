@@ -15,17 +15,17 @@ import java.time.LocalDateTime
 @Table(name = "alarms")
 class AlarmEntity(
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    val seq: Long? = null,
-
-    @Column(name = "id", nullable = false, unique = true)
-    val id: String,
+    @Column(name = "id", nullable = false)
+    val id: Long,
 
     @Column(name = "sender_id", nullable = false)
     val senderId: String,
 
     @Column(name = "receiver_id", nullable = false)
     val receiverId: String,
+
+    @Column(name = "channel_type", nullable = false)
+    val channelType: String,
 
     @Column(nullable = false)
     val name: String,
@@ -49,6 +49,7 @@ class AlarmEntity(
                 id = alarm.id,
                 senderId = alarm.senderId,
                 receiverId = alarm.receiverId,
+                channelType = alarm.channelType,
                 name = alarm.name,
                 status = alarm.status,
                 payload = alarm.payload,
@@ -63,6 +64,7 @@ class AlarmEntity(
             id = id,
             senderId = senderId,
             receiverId = receiverId,
+            channelType = channelType,
             name = name,
             status = status,
             payload = payload,

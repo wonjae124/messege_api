@@ -19,13 +19,24 @@ class KafkaAlarmJobProducer(
 
     override fun publishAlarmJob(alarm: Alarm) {
         val partitionKey = "${alarm.senderId}:${alarm.receiverId}"
-        val uuidClean = alarm.id.replace("-", "")
+        val uuidClean = alarm.id.toString()
         
         val requestId = MDC.get("requestId")
         val spanContext = io.opentelemetry.api.trace.Span.current().spanContext
         val traceId = if (spanContext.isValid) spanContext.traceId else null
         
         val payload = """{"alarmId":"${alarm.id}","senderId":"${alarm.senderId}","receiverId":"${alarm.receiverId}","uuid":"$uuidClean","requestId":${if (requestId != null) "\"$requestId\"" else "null"},"traceId":${if (traceId != null) "\"$traceId\"" else "null"},"retryCount":0}"""
+        
+        kafkaTemplate.send("alarm-jobs", partitionKey, payload)
+    }
+
+    override fun publishAlarmJobFromOutbox(event: com.alarm.domain.AlarmOutboxEvent) {
+        val partitionKey = "${event.senderId}:${event.receiverId}"
+        val requestId = MDC.get("requestId")
+        val spanContext = io.opentelemetry.api.trace.Span.current().spanContext
+        val traceId = if (spanContext.isValid) spanContext.traceId else null
+        
+        val payload = """{"alarmId":"${event.alarmId}","senderId":"${event.senderId}","receiverId":"${event.receiverId}","uuid":"${event.uuid}","requestId":${if (requestId != null) "\"$requestId\"" else "null"},"traceId":${if (traceId != null) "\"$traceId\"" else "null"},"retryCount":0}"""
         
         kafkaTemplate.send("alarm-jobs", partitionKey, payload)
     }

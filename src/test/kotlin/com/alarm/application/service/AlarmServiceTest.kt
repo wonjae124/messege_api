@@ -44,9 +44,10 @@ class AlarmServiceTest {
     private lateinit var alarmService: AlarmService
 
     private val dummyAlarm = Alarm.create(
-        id = "dummy-id",
+        id = 99999L,
         senderId = "sender-1",
         receiverId = "receiver-1",
+        channelType = "SMS",
         name = "Dummy",
         payload = null
     )
@@ -83,9 +84,10 @@ class AlarmServiceTest {
     fun `createAlarm - should save alarm with PENDING status in DB`() {
         // Given
         val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = "test-uuid-123",
+            id = 12345L,
             senderId = "sender-1",
             receiverId = "receiver-1",
+            channelType = "SMS",
             name = "Test Alarm",
             payload = "{}"
         )
@@ -113,9 +115,10 @@ class AlarmServiceTest {
     fun `createAlarm - should publish job to message queue`() {
         // Given
         val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = "test-uuid-123",
+            id = 12345L,
             senderId = "sender-1",
             receiverId = "receiver-1",
+            channelType = "SMS",
             name = "Test Alarm",
             payload = "{}"
         )
@@ -139,9 +142,10 @@ class AlarmServiceTest {
     fun `createAlarm - should throw CONFLICT exception on duplicate request`() {
         // Given
         val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = "test-uuid-123",
+            id = 12345L,
             senderId = "sender-1",
             receiverId = "receiver-1",
+            channelType = "SMS",
             name = "Test Alarm",
             payload = "{}"
         )
@@ -164,17 +168,18 @@ class AlarmServiceTest {
     fun `triggerAlarm - should skip if status is already SENT`() {
         // Given
         val alarm = Alarm.create(
-            id = "alarm-123",
+            id = 12345L,
             senderId = "sender-1",
             receiverId = "receiver-1",
+            channelType = "SMS",
             name = "Already Sent Alarm",
             payload = "{}"
         )
         alarm.sent()
-        `when`(alarmRepositoryPort.findById("alarm-123")).thenReturn(alarm)
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(alarm)
 
         // When
-        alarmService.triggerAlarm("alarm-123")
+        alarmService.triggerAlarm("12345")
 
         // Then
         verify(notificationPort, never()).sendNotification(anyList())
@@ -190,20 +195,21 @@ class AlarmServiceTest {
     fun `triggerAlarm - should update status to SENT and record SUCCESS log on success`() {
         // Given
         val alarm = Alarm.create(
-            id = "alarm-123",
+            id = 12345L,
             senderId = "sender-1",
             receiverId = "receiver-1",
+            channelType = "SMS",
             name = "Pending Alarm",
             payload = "{}"
         )
-        `when`(alarmRepositoryPort.findById("alarm-123")).thenReturn(alarm)
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(alarm)
         `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.empty())
         
         val alarmCaptor = ArgumentCaptor.forClass(Alarm::class.java)
         `when`(alarmRepositoryPort.save(alarmCaptor.capture() ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
 
         // When
-        alarmService.triggerAlarm("alarm-123")
+        alarmService.triggerAlarm("12345")
 
         // Then
         val savedAlarm = alarmCaptor.value
@@ -223,13 +229,14 @@ class AlarmServiceTest {
     fun `triggerAlarm - should update status to FAILED and record FAILED log on failure`() {
         // Given
         val alarm = Alarm.create(
-            id = "alarm-123",
+            id = 12345L,
             senderId = "sender-1",
             receiverId = "receiver-1",
+            channelType = "SMS",
             name = "Pending Alarm",
             payload = "{}"
         )
-        `when`(alarmRepositoryPort.findById("alarm-123")).thenReturn(alarm)
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(alarm)
         `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.error(RuntimeException("Connection timeout")))
         
         val alarmCaptor = ArgumentCaptor.forClass(Alarm::class.java)
@@ -237,7 +244,7 @@ class AlarmServiceTest {
 
         // When & Then
         assertThrows<RuntimeException> {
-            alarmService.triggerAlarm("alarm-123")
+            alarmService.triggerAlarm("12345")
         }
 
         val savedAlarm = alarmCaptor.value

@@ -7,6 +7,7 @@ import com.alarm.application.port.out.AlarmExecutionLogRepositoryPort
 import com.alarm.application.port.out.AlarmRepositoryPort
 import com.alarm.application.port.out.NotificationPort
 import com.alarm.domain.AlarmStatus
+import com.alarm.domain.Alarm
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.apache.kafka.clients.producer.ProducerRecord
@@ -140,7 +141,7 @@ class KafkaProducerConsumerFailureTest {
         // Then: H2 DB에서 알람 상태가 FAILED로 갱신되었는지 폴링 검증
         var isFailed = false
         for (i in 1..50) {
-            val alarm = alarmRepositoryPort.findById(alarmId)
+            val alarm = alarmRepositoryPort.findById(alarmId.toLong())
             if (alarm?.status == AlarmStatus.FAILED) {
                 isFailed = true
                 break
@@ -162,15 +163,13 @@ class KafkaProducerConsumerFailureTest {
      */
     @Test
     @Suppress("UNCHECKED_CAST")
-    fun `consumer should republish failed alarm to retry topic`() {
-        // Given: 순수 단위 테스트로 consumer 직접 구성
+    fun `consumer should update status to FAILED when max retries are exceeded`() {
+        // Given: 소비자 직접 구성
         val mockAlarmRepo = mock(AlarmRepositoryPort::class.java)
         val mockLogRepo = mock(AlarmExecutionLogRepositoryPort::class.java)
         val mockNotification = mock(NotificationPort::class.java)
         val mockRedis = mock(StringRedisTemplate::class.java)
         val mockRateLimiter = mock(RedisRateLimiter::class.java)
-        val mockKafka = mock(KafkaTemplate::class.java) as KafkaTemplate<String, String>
-        val mockAck = mock(Acknowledgment::class.java)
         val mockValueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
         `when`(mockRedis.opsForValue()).thenReturn(mockValueOps)
@@ -180,22 +179,31 @@ class KafkaProducerConsumerFailureTest {
         `when`(mockNotification.sendNotification(anyList()))
             .thenReturn(Mono.error(RuntimeException("Connection refused")))
 
+        val testAlarm = Alarm.create(
+            id = 12345L,
+            senderId = "sender-1",
+            receiverId = "receiver-1",
+            channelType = "SMS",
+            name = "Test Alarm",
+            payload = "{}"
+        )
+        `when`(mockAlarmRepo.findById(12345L)).thenReturn(testAlarm)
+
         val testMapper = ObjectMapper().registerKotlinModule()
         val consumer = KafkaAlarmJobConsumer(
             mockAlarmRepo, mockNotification, mockLogRepo,
-            mockRedis, mockRateLimiter, testMapper, mockKafka
+            mockRedis, mockRateLimiter, testMapper
         )
 
-        val payload = """{"alarmId":"alarm-retry-test","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-retry"}"""
+        val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-retry"}"""
 
-        // When: 소비자 직접 호출
-        consumer.consumeAlarmJobs(listOf(payload), mockAck)
+        // When: 4번째 실패 시도 (maxAttempts = 4)를 직접 호출하여 최종 실패 상황을 재현
+        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payload, 4).join()
+        }
 
-        // Then: alarm-jobs-retry 토픽으로 재발행 요청이 발생했는지 검증
-        verify(mockKafka, times(1)).send(org.mockito.ArgumentMatchers.eq("alarm-jobs-retry"), anyString())
-        // FAILED 상태로 DB 업데이트도 검증
-        verify(mockAlarmRepo).updateStatusesInBatch(listOf("alarm-retry-test"), AlarmStatus.FAILED)
-        verify(mockAck).acknowledge()
+        // Then: DEAD 상태로 DB 업데이트가 검증되어야 함 (최대 시도 초과)
+        verify(mockAlarmRepo).updateStatusesInBatch(listOf(12345L), AlarmStatus.DEAD)
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -218,8 +226,6 @@ class KafkaProducerConsumerFailureTest {
         val mockNotification = mock(NotificationPort::class.java)
         val mockRedis = mock(StringRedisTemplate::class.java)
         val mockRateLimiter = mock(RedisRateLimiter::class.java)
-        val mockKafka = mock(KafkaTemplate::class.java) as KafkaTemplate<String, String>
-        val mockAck = mock(Acknowledgment::class.java)
         val mockValueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
         val procKey = "proc:sender-Auuid-SAME"
@@ -234,24 +240,34 @@ class KafkaProducerConsumerFailureTest {
             .thenReturn(false)  // 두 번째 시도
         `when`(mockValueOps.get(org.mockito.ArgumentMatchers.eq(procKey))).thenReturn("PROCESSING")
 
+        val testAlarm = Alarm.create(
+            id = 10001L,
+            senderId = "sender-A",
+            receiverId = "receiver-A",
+            channelType = "SMS",
+            name = "First Alarm",
+            payload = "{}"
+        )
+        `when`(mockAlarmRepo.findById(10001L)).thenReturn(testAlarm)
+
         val testMapper = ObjectMapper().registerKotlinModule()
         val consumer = KafkaAlarmJobConsumer(
             mockAlarmRepo, mockNotification, mockLogRepo,
-            mockRedis, mockRateLimiter, testMapper, mockKafka
+            mockRedis, mockRateLimiter, testMapper
         )
 
         // 동일 uuid를 가진 메시지 2건 (alarmId만 다름)
-        val payload1 = """{"alarmId":"alarm-first","senderId":"sender-A","receiverId":"receiver-A","uuid":"uuid-SAME"}"""
-        val payload2 = """{"alarmId":"alarm-second","senderId":"sender-A","receiverId":"receiver-A","uuid":"uuid-SAME"}"""
+        val payload1 = """{"alarmId":"10001","senderId":"sender-A","receiverId":"receiver-A","uuid":"uuid-SAME"}"""
+        val payload2 = """{"alarmId":"10002","senderId":"sender-A","receiverId":"receiver-A","uuid":"uuid-SAME"}"""
 
         // When
-        consumer.consumeAlarmJobs(listOf(payload1, payload2), mockAck)
+        consumer.consumeAlarmJob(payload1, 1).join()
+        consumer.consumeAlarmJob(payload2, 1).join()
 
         // Then: 중복 건 제외 → sendNotification은 정확히 1회만 호출
         verify(mockNotification, times(1)).sendNotification(anyList())
         // 첫 번째만 SENT, 두 번째는 처리 안됨
-        verify(mockAlarmRepo).updateStatusesInBatch(listOf("alarm-first"), AlarmStatus.SENT)
-        verify(mockAck).acknowledge()
+        verify(mockAlarmRepo).updateStatusesInBatch(listOf(10001L), AlarmStatus.SENT)
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -275,8 +291,6 @@ class KafkaProducerConsumerFailureTest {
         val mockNotification = mock(NotificationPort::class.java)
         val mockRedis = mock(StringRedisTemplate::class.java)
         val mockRateLimiter = mock(RedisRateLimiter::class.java)
-        val mockKafka = mock(KafkaTemplate::class.java) as KafkaTemplate<String, String>
-        val mockAck = mock(Acknowledgment::class.java)
         val mockValueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
         `when`(mockRedis.opsForValue()).thenReturn(mockValueOps)
@@ -284,25 +298,38 @@ class KafkaProducerConsumerFailureTest {
         `when`(mockRateLimiter.tryAcquire(anyInt())).thenReturn(true)
         `when`(mockNotification.sendNotification(anyList())).thenReturn(Mono.empty())
 
+        val testAlarm = Alarm.create(
+            id = 10003L,
+            senderId = "sender-1",
+            receiverId = "receiver-1",
+            channelType = "SMS",
+            name = "Valid Alarm",
+            payload = "{}"
+        )
+        `when`(mockAlarmRepo.findById(10003L)).thenReturn(testAlarm)
+
         val testMapper = ObjectMapper().registerKotlinModule()
         val consumer = KafkaAlarmJobConsumer(
             mockAlarmRepo, mockNotification, mockLogRepo,
-            mockRedis, mockRateLimiter, testMapper, mockKafka
+            mockRedis, mockRateLimiter, testMapper
         )
 
         // 정상 JSON 1건 + 잘못된 포맷 1건
-        val validPayload = """{"alarmId":"alarm-valid","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-valid"}"""
+        val validPayload = """{"alarmId":"10003","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-valid"}"""
         val malformedPayload = """NOT_A_JSON_AT_ALL"""
 
         // When
-        consumer.consumeAlarmJobs(listOf(validPayload, malformedPayload), mockAck)
+        consumer.consumeAlarmJob(validPayload, 1).join()
+        
+        // 파싱 불가능한 JSON 수신 시 예외 발생 검증
+        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(malformedPayload, 1).join()
+        }
 
         // Then: 정상 건만 발송되어야 하므로 sendNotification 1회 호출
         verify(mockNotification, times(1)).sendNotification(anyList())
         // 정상 건의 SENT 상태 업데이트 검증
-        verify(mockAlarmRepo).updateStatusesInBatch(listOf("alarm-valid"), AlarmStatus.SENT)
-        // 전체 배치가 ack되어야 함 (잘못된 건 때문에 멈추면 안됨)
-        verify(mockAck).acknowledge()
+        verify(mockAlarmRepo).updateStatusesInBatch(listOf(10003L), AlarmStatus.SENT)
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -342,15 +369,13 @@ class KafkaProducerConsumerFailureTest {
      */
     @Test
     @Suppress("UNCHECKED_CAST")
-    fun `consumer should ack even when all messages are duplicates`() {
+    fun `consumer should not invoke sendNotification when all messages are duplicates`() {
         // Given
         val mockAlarmRepo = mock(AlarmRepositoryPort::class.java)
         val mockLogRepo = mock(AlarmExecutionLogRepositoryPort::class.java)
         val mockNotification = mock(NotificationPort::class.java)
         val mockRedis = mock(StringRedisTemplate::class.java)
         val mockRateLimiter = mock(RedisRateLimiter::class.java)
-        val mockKafka = mock(KafkaTemplate::class.java) as KafkaTemplate<String, String>
-        val mockAck = mock(Acknowledgment::class.java)
         val mockValueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
         `when`(mockRedis.opsForValue()).thenReturn(mockValueOps)
@@ -361,18 +386,17 @@ class KafkaProducerConsumerFailureTest {
         val testMapper = ObjectMapper().registerKotlinModule()
         val consumer = KafkaAlarmJobConsumer(
             mockAlarmRepo, mockNotification, mockLogRepo,
-            mockRedis, mockRateLimiter, testMapper, mockKafka
+            mockRedis, mockRateLimiter, testMapper
         )
 
-        val payload1 = """{"alarmId":"alarm-dup-1","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup-1"}"""
-        val payload2 = """{"alarmId":"alarm-dup-2","senderId":"sender-2","receiverId":"receiver-2","uuid":"uuid-dup-2"}"""
+        val payload1 = """{"alarmId":"10004","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup-1"}"""
+        val payload2 = """{"alarmId":"10005","senderId":"sender-2","receiverId":"receiver-2","uuid":"uuid-dup-2"}"""
 
         // When
-        consumer.consumeAlarmJobs(listOf(payload1, payload2), mockAck)
+        consumer.consumeAlarmJob(payload1, 1).join()
+        consumer.consumeAlarmJob(payload2, 1).join()
 
         // Then: sendNotification은 한 번도 호출되지 않아야 함
         verify(mockNotification, never()).sendNotification(anyList())
-        // 처리할 게 없어도 ack는 반드시 호출되어야 오프셋 누락 없음
-        verify(mockAck).acknowledge()
     }
 }

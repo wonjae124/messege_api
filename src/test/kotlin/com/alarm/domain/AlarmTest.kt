@@ -18,7 +18,7 @@ class AlarmTest {
 
     @Test
     fun `should create alarm with valid inputs`() {
-        val alarm = Alarm.create(senderId = "12345", receiverId = "9999", name = "Test Alarm", payload = "{}")
+        val alarm = Alarm.create(id = 1L, senderId = "12345", receiverId = "9999", name = "Test Alarm", payload = "{}")
 
         assertNotNull(alarm.id)
         assertEquals("Test Alarm", alarm.name)
@@ -28,13 +28,13 @@ class AlarmTest {
     @Test
     fun `should fail to create alarm when name is blank`() {
         assertThrows<IllegalArgumentException> {
-            Alarm.create(senderId = "12345", receiverId = "9999", name = "   ", payload = "{}")
+            Alarm.create(id = 1L, senderId = "12345", receiverId = "9999", name = "   ", payload = "{}")
         }
     }
 
     @Test
     fun `should update status correctly on trigger`() {
-        val alarm = Alarm.create(senderId = "12345", receiverId = "9999", name = "Test Alarm", payload = "{}")
+        val alarm = Alarm.create(id = 1L, senderId = "12345", receiverId = "9999", name = "Test Alarm", payload = "{}")
         
         alarm.sent()
         assertEquals(AlarmStatus.SENT, alarm.status)

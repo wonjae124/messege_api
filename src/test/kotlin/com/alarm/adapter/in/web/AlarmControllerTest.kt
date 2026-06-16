@@ -91,7 +91,7 @@ class AlarmControllerTest {
         val responseBody = createResult.response.contentAsString
         val alarmId = objectMapper.readTree(responseBody).get("id").asText()
 
-        val savedAlarm = alarmRepositoryPort.findById(alarmId)
+        val savedAlarm = alarmRepositoryPort.findById(alarmId.toLong())
         assertNotNull(savedAlarm)
         assertEquals("Web Test Alarm", savedAlarm?.name)
     }
@@ -118,7 +118,7 @@ class AlarmControllerTest {
         triggerAlarmUseCase.triggerAlarm(alarmId)
 
         // 알람 상태가 SENT로 변경되었는지 확인
-        val savedAlarm = alarmRepositoryPort.findById(alarmId)
+        val savedAlarm = alarmRepositoryPort.findById(alarmId.toLong())
         assertNotNull(savedAlarm)
         assertEquals(AlarmStatus.SENT, savedAlarm?.status)
     }

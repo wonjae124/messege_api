@@ -44,17 +44,16 @@ class OutboxEventPublisher(
             try {
                 messageQueuePort.publishAlarmJobFromOutbox(event)
                 event.markPublished()
-                // 원본 알람 테이블에도 상태 동기화 (발행 성공)
-                alarmRepositoryPort.updateStatusesInBatch(listOf(event.alarmId), AlarmStatus.PUBLISHED)
+                // 원본 알람 테이블은 PENDING 상태를 유지하므로 별도 상태 동기화 업데이트 생략
                 alarmOutboxEventRepositoryPort.save(event)
-                logger.info("Outbox: alarmId={} Kafka 발행 완료 → PUBLISHED", event.alarmId)
+                logger.info("Outbox: alarmId={} Kafka 발행 완료", event.alarmId)
             } catch (e: Exception) {
                 val isFinalFail = event.recordFailure()
                 alarmOutboxEventRepositoryPort.save(event)
                 if (isFinalFail) {
                     // 최대 재시도 초과 시 원본 알람 테이블에도 최종 실패 마킹
-                    alarmRepositoryPort.updateStatusesInBatch(listOf(event.alarmId), AlarmStatus.PUBLISH_FAILED)
-                    logger.error("Outbox: alarmId={} Kafka 발행 최종 실패 → PUBLISH_FAILED", event.alarmId, e)
+                    alarmRepositoryPort.updateStatusesInBatch(listOf(event.alarmId.toLong()), AlarmStatus.FAILED)
+                    logger.error("Outbox: alarmId={} Kafka 발행 최종 실패 → FAILED", event.alarmId, e)
                 } else {
                     logger.warn("Outbox: alarmId={} Kafka 발행 일시 실패. 재시도 횟수: {}, 다음 재시도: {}", event.alarmId, event.retryCount, event.nextRetryAt, e)
                 }

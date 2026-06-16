@@ -16,6 +16,7 @@ import org.springframework.http.client.reactive.ReactorClientHttpConnector
 import org.springframework.stereotype.Component
 import org.springframework.web.reactive.function.client.WebClient
 import org.springframework.web.reactive.function.client.WebClientResponseException
+import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import reactor.netty.http.client.HttpClient
 import reactor.util.retry.Retry
@@ -47,38 +48,46 @@ class MockApiNotificationAdapter(
         .clientConnector(ReactorClientHttpConnector(httpClient))
         .build()
 
+    data class SendMockRequest(
+        val requestId: String,
+        val channelType: String,
+        val receiver: String,
+        val message: String
+    )
+
     @CircuitBreaker(name = "externalApi", fallbackMethod = "sendNotificationFallback")
     override fun sendNotification(items: List<AlarmBatchItem>): Mono<Void> {
         if (items.isEmpty()) return Mono.empty()
         
-        val body = items.map { item ->
-            mapOf(
-                "alarmId" to item.alarmId,
-                "senderId" to item.senderId,
-                "uuid" to item.uuidClean,
-                "payload" to item.payload
-            )
-        }
-
-        return webClient.post()
-            .uri("/notifications/batch")
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue(body)
-            .retrieve()
-            .bodyToMono(Void::class.java)
-            .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
-                .filter { throwable ->
-                    throwable is WebClientResponseException &&
-                    (throwable.statusCode.value() == 429 || throwable.statusCode.is5xxServerError)
-                }
-            )
-            .onErrorMap { throwable ->
-                if (throwable is WebClientResponseException) {
-                    ExternalApiException(throwable.statusCode.value(), throwable.message ?: "External API failure")
-                } else {
-                    throwable
-                }
+        return Flux.fromIterable(items)
+            .flatMap { item ->
+                val request = SendMockRequest(
+                    requestId = item.uuidClean,
+                    channelType = item.channelType,
+                    receiver = item.receiverId,
+                    message = item.payload ?: ""
+                )
+                webClient.post()
+                    .uri("/mock/send")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request)
+                    .retrieve()
+                    .bodyToMono(Void::class.java)
+                    .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
+                        .filter { throwable ->
+                            throwable is WebClientResponseException &&
+                            (throwable.statusCode.value() == 429 || throwable.statusCode.is5xxServerError)
+                        }
+                    )
+                    .onErrorMap { throwable ->
+                        if (throwable is WebClientResponseException) {
+                            ExternalApiException(throwable.statusCode.value(), throwable.message ?: "External API failure")
+                        } else {
+                            throwable
+                        }
+                    }
             }
+            .then()
     }
 
     /**

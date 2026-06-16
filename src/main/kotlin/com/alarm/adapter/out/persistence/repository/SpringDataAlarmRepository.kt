@@ -11,6 +11,5 @@ import org.springframework.data.jpa.repository.JpaRepository
  */
 
 interface SpringDataAlarmRepository : JpaRepository<AlarmEntity, Long> {
-    fun findById(id: String): AlarmEntity?
-    fun findAllByIdIn(ids: List<String>): List<AlarmEntity>
+    fun findAllByIdIn(ids: List<Long>): List<AlarmEntity>
 }

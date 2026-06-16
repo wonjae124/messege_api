@@ -71,14 +71,26 @@ class KafkaAlarmJobConsumerTest {
         // Mockito 표준 anyList() 매처는 null이 아닌 빈 리스트를 반환하여 안전함
         `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.empty())
 
+        val dummyAlarm = com.alarm.domain.Alarm.reconstruct(
+            id = 12345L,
+            senderId = "sender-1",
+            receiverId = "receiver-1",
+            channelType = "SMS",
+            name = "Test Alarm",
+            status = AlarmStatus.PENDING,
+            payload = "Test Payload",
+            createdAt = java.time.LocalDateTime.now(),
+            updatedAt = java.time.LocalDateTime.now()
+        )
+        `when`(alarmRepositoryPort.findById(anyLong())).thenReturn(dummyAlarm)
+
         consumer = KafkaAlarmJobConsumer(
             alarmRepositoryPort,
             notificationPort,
             alarmExecutionLogRepositoryPort,
             redisTemplate,
             redisRateLimiter,
-            objectMapper,
-            kafkaTemplate
+            objectMapper
         )
     }
 
@@ -91,15 +103,15 @@ class KafkaAlarmJobConsumerTest {
     @Test
     fun `should update RDB H2 status to SENT on successful processing`() {
         // Given
-        val payload = """{"alarmId":"alarm-ok","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-ok"}"""
+        val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-ok"}"""
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
 
         // When
-        consumer.consumeAlarmJobs(listOf(payload), ack)
+        consumer.consumeAlarmJob(payload, 1)
 
         // Then
         // H2 DB 상태 업데이트 시 SENT(Done) 상태로 업데이트되는지 검증
-        verify(alarmRepositoryPort).updateStatusesInBatch(listOf("alarm-ok"), AlarmStatus.SENT)
+        verify(alarmRepositoryPort).updateStatusesInBatch(listOf(12345L), AlarmStatus.SENT)
     }
 
     /**
@@ -113,8 +125,8 @@ class KafkaAlarmJobConsumerTest {
     @Test
     fun `should detect and ignore duplicate Kafka jobs using Redis proc key`() {
         // Given
-        val payload1 = """{"alarmId":"alarm-1","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
-        val payload2 = """{"alarmId":"alarm-2","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
+        val payload1 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
+        val payload2 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
         // 두 메시지가 동일한 proc 키를 공유함: proc:sender-1uuid-dup
         val procKey = "proc:sender-1uuid-dup"
 
@@ -127,12 +139,12 @@ class KafkaAlarmJobConsumerTest {
         `when`(valueOps.get(eq(procKey))).thenReturn("PROCESSING")
 
         // When
-        consumer.consumeAlarmJobs(listOf(payload1, payload2), ack)
+        consumer.consumeAlarmJob(payload1, 1)
+        consumer.consumeAlarmJob(payload2, 1)
 
         // Then
         // ArgumentCaptor 캐스팅 없이 호출 횟수(1회)만 verify → Kotlin null-safety 문제 없음
         verify(notificationPort, times(1)).sendNotification(anyList())
-        verify(ack).acknowledge()
     }
 
     /**
@@ -144,18 +156,20 @@ class KafkaAlarmJobConsumerTest {
     @Test
     fun `should update RDB H2 status to FAILED and record log on execution failure`() {
         // Given
-        val payload = """{"alarmId":"alarm-fail","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-fail"}"""
+        val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-fail"}"""
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.error(RuntimeException("Connection lost")))
 
         // When
-        consumer.consumeAlarmJobs(listOf(payload), ack)
+        org.junit.jupiter.api.Assertions.assertThrows(RuntimeException::class.java) {
+            consumer.consumeAlarmJob(payload, 4)
+        }
 
         // Then
         // 1. H2 DB에 FAILED 상태로 일괄 업데이트되는지 검증
-        verify(alarmRepositoryPort).updateStatusesInBatch(listOf("alarm-fail"), AlarmStatus.FAILED)
-        // 2. FAILED 실행 로그가 saveAll로 저장되는지 검증
-        verify(alarmExecutionLogRepositoryPort).saveAll(anyList())
+        verify(alarmRepositoryPort).updateStatusesInBatch(listOf(12345L), AlarmStatus.FAILED)
+        // 2. FAILED 실행 로그가 save로 저장되는지 검증
+        verify(alarmExecutionLogRepositoryPort).save(anyObject(AlarmExecutionLog::class.java))
     }
 
     /**
@@ -169,32 +183,50 @@ class KafkaAlarmJobConsumerTest {
      *        초과 시 대기 및 재선점이 정상 동작하는지 증명
      */
     @Test
-    fun `should block and wait on 501st and 502nd calls when rate limit is exceeded`() {
+    fun `should block and wait when rate limit is exceeded`() {
         // Given
-        // 502개의 배치 청크를 발생시키기 위해 502 * 200 = 100,400개의 대용량 데이터 생성
-        val payloads = List(502 * 200) { index ->
+        // 3개의 알람 메시지 생성
+        val payloads = List(3) { index ->
             """{"alarmId":"alarm-$index","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-$index"}"""
         }
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
 
-        // tryAcquire가 500번째까지는 true, 501~502번째는 false(제한 차단), 503번째부터 다시 true를 반환하는 시뮬레이션
+        // tryAcquire가 1번째 성공, 2번째 실패(차단), 3번째(재시도) 성공, 그 이후 성공하도록 설정
         var rateLimitCallCount = 0
         `when`(redisRateLimiter.tryAcquire(1)).thenAnswer {
             rateLimitCallCount++
-            when {
-                rateLimitCallCount <= 500 -> true           // 처음 500번: 허용
-                rateLimitCallCount == 501 || rateLimitCallCount == 502 -> false  // 501~502번: 차단(대기)
-                else -> true                                  // 503번 이후: 다시 허용
+            when (rateLimitCallCount) {
+                1 -> true   // 1번째 알람: 즉시 허용
+                2 -> false  // 2번째 알람 (첫 시도): 차단 (대기)
+                3 -> true   // 2번째 알람 (재시도): 대기 후 허용
+                else -> true // 3번째 알람 이후: 즉시 허용
             }
         }
 
         // When
-        consumer.consumeAlarmJobs(payloads, ack)
+        payloads.forEach { consumer.consumeAlarmJob(it, 1) }
 
         // Then
-        // 502개의 모든 청크가 완료될 때까지 tryAcquire가 총 504번 호출되었는지 검증
-        // (500회 성공 + 2회 대기 실패 + 2회 대기 후 재선점 성공 = 504회)
-        verify(redisRateLimiter, times(504)).tryAcquire(1)
-        verify(ack).acknowledge()
+        // 총 호출 횟수: 
+        // 1번째 알람 처리 시 1회
+        // 2번째 알람 처리 시 1회(실패) + 1회(성공) = 2회
+        // 3번째 알람 처리 시 1회
+        // 총 4회 호출되어야 함
+        verify(redisRateLimiter, times(4)).tryAcquire(1)
+    }
+}
+
+@Suppress("UNCHECKED_CAST")
+private fun <T> anyObject(type: Class<T>): T {
+    Mockito.any(type)
+    return when (type) {
+        AlarmExecutionLog::class.java -> AlarmExecutionLog.reconstruct(
+            id = java.util.UUID.randomUUID(),
+            alarmId = "dummy",
+            triggeredAt = java.time.LocalDateTime.now(),
+            status = "SUCCESS",
+            errorMessage = null
+        ) as T
+        else -> null as T
     }
 }

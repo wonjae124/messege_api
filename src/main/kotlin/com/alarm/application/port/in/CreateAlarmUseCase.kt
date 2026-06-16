@@ -13,9 +13,10 @@ interface CreateAlarmUseCase {
     fun createAlarm(command: CreateAlarmCommand): Alarm
 
     data class CreateAlarmCommand(
-        val id: String,
+        val id: Long,
         val senderId: String,
         val receiverId: String,
+        val channelType: String,
         val name: String,
         val payload: String?
     )

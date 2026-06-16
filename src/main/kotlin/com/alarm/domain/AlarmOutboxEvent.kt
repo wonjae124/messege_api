@@ -26,10 +26,10 @@ class AlarmOutboxEvent private constructor(
 ) {
     companion object {
         fun create(alarm: Alarm): AlarmOutboxEvent {
-            val uuid = alarm.id.replace("-", "")
+            val uuid = alarm.id.toString()
             return AlarmOutboxEvent(
                 id = UUID.randomUUID().toString(),
-                alarmId = alarm.id,
+                alarmId = alarm.id.toString(),
                 senderId = alarm.senderId,
                 receiverId = alarm.receiverId,
                 uuid = uuid,

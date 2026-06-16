@@ -13,8 +13,10 @@ interface NotificationPort {
 }
 
 data class AlarmBatchItem(
-    val alarmId: String,
+    val alarmId: Long,
     val senderId: String,
+    val receiverId: String,
+    val channelType: String,
     val uuidClean: String,
     val payload: String?
 )

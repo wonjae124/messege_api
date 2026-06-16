@@ -13,7 +13,8 @@ import java.time.LocalDateTime
 data class AlarmCreateRequest(
     val name: String,
     val payload: String? = null,
-    val receiverId: String? = null
+    val receiverId: String? = null,
+    val channelType: String? = null
 )
 
 data class AlarmUpdateRequest(
@@ -26,6 +27,7 @@ data class AlarmResponse(
     val id: String,
     val senderId: String,
     val receiverId: String,
+    val channelType: String,
     val name: String,
     val status: AlarmStatus,
     val payload: String?,
@@ -35,9 +37,10 @@ data class AlarmResponse(
     companion object {
         fun fromDomain(alarm: Alarm): AlarmResponse {
             return AlarmResponse(
-                id = alarm.id,
+                id = alarm.id.toString(),
                 senderId = alarm.senderId,
                 receiverId = alarm.receiverId,
+                channelType = alarm.channelType,
                 name = alarm.name,
                 status = alarm.status,
                 payload = alarm.payload,

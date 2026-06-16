@@ -179,7 +179,7 @@ class KafkaProducerConsumerSuccessTest {
         alarmIds.forEach { alarmId ->
             var isSent = false
             for (i in 1..50) {
-                if (alarmRepositoryPort.findById(alarmId)?.status == AlarmStatus.SENT) {
+                if (alarmRepositoryPort.findById(alarmId.toLong())?.status == AlarmStatus.SENT) {
                     isSent = true
                     break
                 }

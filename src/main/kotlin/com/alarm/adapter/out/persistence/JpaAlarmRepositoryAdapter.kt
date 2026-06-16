@@ -32,18 +32,14 @@ class JpaAlarmRepositoryAdapter(
         return savedEntity.toDomain()
     }
 
-    override fun findById(id: String): Alarm? {
+    override fun findById(id: Long): Alarm? {
         return springDataAlarmRepository.findById(id)
+            .orElse(null)
             ?.toDomain()
     }
 
-    override fun findAllByIds(ids: List<String>): List<Alarm> {
+    override fun findAllByIds(ids: List<Long>): List<Alarm> {
         return springDataAlarmRepository.findAllByIdIn(ids)
-            .map { it.toDomain() }
-    }
-
-    override fun findAllByIds(ids: List<String>): List<Alarm> {
-        return springDataAlarmRepository.findAllById(ids)
             .map { it.toDomain() }
     }
 
@@ -57,14 +53,14 @@ class JpaAlarmRepositoryAdapter(
         springDataAlarmRepository.delete(entity)
     }
 
-    override fun updateStatusesInBatch(ids: List<String>, status: AlarmStatus) {
+    override fun updateStatusesInBatch(ids: List<Long>, status: AlarmStatus) {
         if (ids.isEmpty()) return
         val sql = "UPDATE alarms SET status = ?, updated_at = ? WHERE id = ?"
         jdbcTemplate.batchUpdate(sql, object : BatchPreparedStatementSetter {
             override fun setValues(ps: PreparedStatement, i: Int) {
                 ps.setString(1, status.name)
                 ps.setTimestamp(2, Timestamp.valueOf(LocalDateTime.now()))
-                ps.setString(3, ids[i])
+                ps.setLong(3, ids[i])
             }
             override fun getBatchSize(): Int = ids.size
         })

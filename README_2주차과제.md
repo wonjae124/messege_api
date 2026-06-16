@@ -133,7 +133,7 @@ if (publishSuccess) {
 - **1차 검증 (DB)**: 수신한 배치 데이터의 상태를 DB에서 대량 조회 후, 이미 `SENT`, `FAILED`, `DEAD`인 건은 필터링하여 Redis 락 경합조차 하지 않음.
 - **분산 락 (Redis)**: 남은 대상들만 Redis `setIfAbsent`를 통해 찰나의 동시성(Race Condition)을 방어.
 - **2차 검증 (DB)**: 락을 획득한 이후 DB 상태를 다시 한번 조회하여, 락 대기 중 다른 인스턴스가 처리해버린 건을 차단.
-- **상태 전이(SENDING) 및 안전한 Lock 해제**: 검증을 통과한 건만 `SENDING`으로 상태를 변경한 뒤 API를 호출하고, 예외 발생 여부와 무관하게 `finally` 블록에서 Redis 락을 해제. 모든 DB 반영이 끝난 뒤에만 오프셋 커밋(Ack) 수행.
+- **상태 전이(SENDING) 및 안전한 Lock 해제**: 검증을 통과한 건만 `SENDING`으로 상태 전이 후 API를 호출하고, 예외 발생 여부와 무관하게 `finally` 블록에서 Redis 락을 해제. 모든 DB 반영이 끝난 뒤에만 오프셋 커밋(Ack) 수행.
 
 #### 💡 결과 및 기대 효과
 - **완벽한 중복 차단**: 수 밀리초 내의 동시 요청은 Redis가 튕겨내고, 장기적인 오프셋 재전달은 DB가 튕겨내는 2중 방어선 구축.
@@ -232,43 +232,23 @@ try {
 
 ## 5. 기타 아키텍처 및 설정 보완 내역 (feature2 브랜치 반영분)
 
-main 브랜치의 기존 `README.md` 아키텍처 문서와 비교하여, 현재(feature2) 브랜치에서 추가적으로 고도화 및 보완된 사항들입니다.
+main 브랜치의 기존 `README.md` 아키텍처 문서와 비교하여, 현재 브랜치에서 추가적으로 고도화 및 보완된 사항들입니다.
 
 ### 5.1 각 아키텍처 결정에 대한 실제 구현 코드 스니펫 추가
-기존 의사결정 내역들에 대해 실제 적용된 **코드 레벨의 증명(Code Snippets)**이 `README.md` 각 섹션 하단에 대폭 보강되었습니다.
-- **[3.4] Rate Limiting**: `redisRateLimiter.tryAcquire`를 통한 초당 500건 제어 로직 추가.
-- **[4.1] 큐 엔진**: `ack.acknowledge()` 수동 커밋을 통한 Kafka 장애 재처리 보장 로직 추가.
-- **[4.2 / 4.4] 동시성 제어**: `redisTemplate.setIfAbsent`를 활용한 분산 락 로직 및 실패 시 키 삭제(`delete`)를 통한 재시도 허용 로직 추가.
-- **[4.5] 에러 복구**: `WebClient`의 지수 백오프(`Retry.backoff`) 및 Kafka Retry Topic(`alarm-jobs-retry`) 재발행 로직 추가.
+기존 의사결정 내역들에 대해 실제 적용된 **코드 레벨의 증명(Code Snippets)**이 각 섹션 하단에 대폭 보강되었습니다.
+- **Rate Limiting**: `redisRateLimiter.tryAcquire`를 통한 초당 500건 제어 로직 추가.
+- **큐 엔진**: `ack.acknowledge()` 수동 커밋을 통한 Kafka 장애 재처리 보장 로직 추가.
+- **동시성 제어**: `redisTemplate.setIfAbsent`를 활용한 분산 락 로직 및 실패 시 키 삭제(`delete`)를 통한 재시도 허용 로직 추가.
+- **에러 복구**: `WebClient`의 지수 백오프(`Retry.backoff`) 및 Kafka Retry Topic(`alarm-jobs-retry`) 재발행 로직 추가.
 
-### 5.2 신규 챕터: Kafka 브로커 메시지 유실 및 중복 저장 방지 (4.6)
+### 5.2 Kafka 브로커 메시지 유실 및 중복 저장 방지
 단일 브로커 및 기본 설정의 한계(메시지 유실 및 중복)를 해결하기 위한 인프라 레벨의 핵심 의사결정이 추가되었습니다.
-
-#### ❓ 고민하게 된 구체적 문제 상황
-- **메시지 유실**: `replication.factor=1` 상태에서 리더 브로커 장애 시, 팔로워에 복제되지 않은 메시지는 영구 유실됨.
-- **메시지 중복**: 프로듀서가 메시지를 보냈으나 네트워크 오류로 ACK를 못 받아 재전송할 경우, 브로커에 2건이 중복 저장되어 유저에게 알림이 2번 감.
-
-#### ⚖️ 대안 비교 및 결정
 - **결정**: 브로커 3대 클러스터링 기반의 **`replication.factor=3` + `min.insync.replicas=2` + `enable.idempotence=true`** 적용.
 - **기대 효과**: 리더 브로커가 죽어도 팔로워에 안전하게 메시지가 보존되며, 프로듀서의 재시도 시 브로커가 시퀀스 넘버(Sequence Number)를 통해 스스로 중복 저장을 차단함.
 
-#### 💻 적용 코드 예시 (핵심 요약)
-```kotlin
-// [KafkaConfig.kt] 토픽 생성 시 replication 및 ISR 설정
-TopicBuilder.name("alarm-jobs")
-    .partitions(3)
-    .replicas(3)  // 리더가 죽어도 팔로워에 데이터 보존
-    .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "2")  // 최소 2곳 저장 확인 후 ACK
-    .build()
-
-// [application.properties]
-// spring.kafka.producer.acks=all           ← enable.idempotence의 전제 조건
-// enable.idempotence=true (Kafka 3.0+ 기본값) ← 재시도 시 브로커 중복 적재 원천 차단
-```
-
 <br>
 
-## 6. PK 채번 방식 및 UUIDv7 전략 도입
+## 6. PK 채번 방식 및 UUIDv7 전략 도입 (1차 설계)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **UUIDv4와 클러스터드 인덱스 단편화**: 기존 시스템은 레코드 식별자(PK)로 `UUIDv4`를 사용하고 있었습니다. UUIDv4는 완전한 난수(랜덤)이므로, 데이터베이스의 PK(클러스터드 인덱스)로 사용될 경우 새로운 레코드가 인덱스 중간중간에 삽입되어 **페이지 분할(Page Split) 현상**을 심하게 유발합니다.
@@ -288,3 +268,206 @@ TopicBuilder.name("alarm-jobs")
 #### 💻 적용 결과 (요약)
 - **도메인 및 API 레이어**: 비즈니스 로직(Alarm 생성 등)에서 `UUID.randomUUID()` 대신 `UuidCreator.getTimeOrderedEpoch()` (UUIDv7)을 사용하도록 일괄 변경했습니다.
 - **영속성(Persistence) 레이어**: 데이터베이스에는 `BIGINT` PK 필드(`seq`)를 추가하여 인덱스 효율을 챙기고, 도메인 식별자용 `uuid` 컬럼에 Unique 속성을 부여해 Source of Truth 구조를 완성했습니다.
+
+<br>
+
+## 7. Snowflake ID 및 멱등성 키 정수 변환을 통한 PK 단일화 도입 (2차 설계 - 최종 결정)
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **기존 설계의 복잡성 (`seq`와 `id` 분리)**: 기존에는 DB 성능(클러스터드 인덱스 삽입 성능)을 위해 인공 키인 `seq` (`BIGINT AUTO_INCREMENT`)를 PK로 잡고, 클라이언트가 주는 멱등성 키 `id` (`VARCHAR/String`)를 유니크 컬럼으로 쪼개서 관리했습니다. 
+- **이중 식별자 불일치 및 버그**: 이로 인해 도메인 모델(`Alarm`)은 `id`만 알고 DB 영속 레이어는 `seq`를 알아야 해서, 저장(`save`)이나 삭제(`delete`) 시 엔티티 상태를 복사할 때 `seq` 유실로 인한 중복 키 오류(H2 Unique Constraint Violation)가 발생하는 등 아키텍처적 불일치와 오류가 빈번했습니다.
+- **근본적 질문**: "클라이언트에게는 유연하게 문자열(String)로 멱등성 키를 받으면서, DB PK는 성능이 뛰어난 정수형(`BIGINT`) 하나로 단일화해서 일치시킬 수는 없을까?"
+
+---
+
+#### 💼 다각도 관점에서의 요구사항 분석
+
+| 분석 관점 | 핵심 키워드 (Key Terms) | 핵심 내용 요약 (Summary) |
+| :--- | :--- | :--- |
+| **비즈니스 (Business)** | **연동 규격의 유연성** | 주문, 결제 등 파트너사별 다양한 문자열 식별키 포맷 수용 필요 |
+| **사업성 (Commercial)** | **실익 중심 리스크 타협** | 알람 도메인 특성상 해시 충돌(알람 누락)보다 대량 트래픽 장애 차단이 극도로 유리 |
+| **기능 (Functional)** | **API 멱등성 보장** | 분산 락 및 DB DCL(Double-Checked Locking)을 통한 중복 발송 원천 차단 |
+| **비기능 (Non-Functional)** | **I/O 성능 & 단순 아키텍처** | `BIGINT` PK 단일화를 통해 인덱스 파편화 방지 및 도메인-DB 키 불일치 제거 |
+
+---
+
+##### 1. 비즈니스 및 사업적 관점 (Business & Commercial)
+*   **연동 편의성**: 외부 파트너사가 각자의 기존 식별 규칙(String)을 그대로 멱등성 키로 주입하여 연동 비용 최소화.
+*   **비용-위험 타협**: 결제 트랜잭션과 달리, 알람 전송의 극히 낮은 해시 충돌 위험은 사업적 실익 측면에서 무시할 만함.
+
+##### 2. 기능적 요구사항 (Functional Requirements)
+*   **중복 발송 차단**: 네트워크 재시도로 인한 동일 알람 중복 발생을 확실하게 예방 (1회만 발송).
+*   **이력 추적**: 클라이언트가 보낸 문자열 키를 기반으로 발송 결과 상태(SENT, FAILED 등)를 신속하게 추적 조회.
+
+##### 3. 비기능적 요구사항 (Non-Functional Requirements)
+*   **초고속 쓰기 성능**: 순차 정렬이 가능한 `BIGINT` 단일 PK를 사용하여 DB 인덱스 파편화와 디스크 I/O 병목을 제거.
+*   **아키텍처 가독성**: 도메인(`Alarm`)과 DB 엔티티(`AlarmEntity`)의 식별자 타입을 `Long`으로 통일하여 영속 레이어의 매핑 복잡성 제거.
+
+---
+
+#### ⚖️ 대안 비교
+
+**A안: 문자열 UUIDv7을 그대로 기본키(PK)로 사용**
+- **특징**: `seq`를 지우고 `id` (`VARCHAR`)를 `@Id`로 설정.
+- **장점**: 코드 구현이 극도로 단순해지고 도메인 모델과 DB 엔티티가 완전히 일치함.
+- **단점**: 128비트 UUID 문자열 인덱스는 정수형 인덱스에 비해 디스크 용량을 많이 차지하고 인덱스 탐색 성능이 저하됨 (비기능적 요구사항 불충족).
+
+**B안: 64비트 정수 Snowflake ID + 문자열 멱등성 키 정수 해싱 (선택)**
+- **특징**: 
+  - 서버에서 자동 생성할 때는 시간순 정렬이 가능한 64비트 **Snowflake ID**(`Long`/`BIGINT`)를 발급하여 PK로 사용.
+  - 클라이언트가 임의의 문자열 `Idempotency-Key`를 전송할 경우, 이를 **64비트 FNV-1a 해시 알고리즘**을 통해 정수(`Long`)로 일관되게 변환하여 PK(`id`)로 사용.
+  - 인공 surrogate 키인 `seq`를 완전히 삭제하고 `id` (`Long`/`BIGINT`) 단일 PK로 설계 통합.
+- **장점**: 
+  - 클라이언트는 제한 없이 모든 형식의 문자열(UUID, 주문번호 등)을 멱등성 키로 쓸 수 있음 (비즈니스 요구사항 만족).
+  - DB 레벨에서는 가장 성능이 좋은 `BIGINT` 단일 PK로 인덱스 정렬성 및 삽입 속도를 챙김 (비기능적 요구사항 만족).
+  - 복잡한 `seq` 조회가 불필요해져 영속성 어댑터 코드가 대폭 단순화됨.
+- **단점**: 
+  - 서로 다른 문자열 멱등성 키가 동일한 64비트 해시 값으로 충돌할 가능성(Hash Collision)이 극히 미미하게 존재함.
+
+---
+
+#### ✅ 결정: B안 (Snowflake ID 발급 + 멱등성 키 64비트 정수 해싱을 통한 단일 BIGINT PK 도입)
+- **선택 사유**:
+  - **비즈니스적 합의**: 고객사 연동 규격(문자열 키)을 유지하면서도, 알람 시스템 도메인의 완화된 정밀도 요구사항을 감안해 해시 충돌 위험보다 성능적 이점을 취함.
+  - **아키텍처적 일관성**: 도메인과 DB 간 식별자 타입을 정수(`Long`)로 일치시킴으로써 복잡한 `seq` 프록시 조회를 완전히 제거하여 복잡도를 낮춤.
+
+#### ❌ 포기한 것
+- **클라이언트가 제공한 원본 문자열(String) 형태 그대로의 멱등성 키 DB 저장**: 멱등성 키를 정수(`Long`)로 일관되게 해싱하여 저장하므로, DB에는 원본 문자열 자체가 저장되지 않으며 이를 역산할 수 없습니다.
+- **인공 식별자(`seq`)와 비즈니스 식별자(`id`)를 분리해서 관리하던 기존의 이중 키 구조**: DB 성능 효율을 위해 두 식별자를 분리 관리하던 번거로움을 해결하고 아키텍처를 단순화하기 위해 해당 구조를 포기(제거)했습니다.
+
+---
+
+#### 💻 적용 코드 예시
+```kotlin
+// 1. 문자열 멱등성 키를 64비트 정수로 일관되게 변환 (FNV-1a 해시)
+fun idempotencyKeyToLong(key: String): Long {
+    var hash = -0x7ee2623b31687c17L
+    val fnvPrime = 0x100000001b3L
+    for (i in 0 until key.length) {
+        hash = hash xor key[i].code.toLong()
+        hash *= fnvPrime
+    }
+    return hash and Long.MAX_VALUE // 양수 변환
+}
+
+// 2. 컨트롤러에서 멱등성 키 정수 변환 및 Snowflake ID 발급
+val parsedId: Long = if (!idempotencyKey.isNullOrBlank()) {
+    idempotencyKeyToLong(idempotencyKey)
+} else {
+    SnowflakeIdGenerator.nextId() // Snowflake ID 생성
+}
+```
+
+<br>
+
+## 8. Kafka 기반 비동기 알람 메시지 처리 고도화 및 멱등성 보장 (DLQ)
+
+#### ❓ 개요
+기존 Kafka 컨슈머의 단순 `try-catch` 방식의 에러 처리와 수동 재시도 로직을 고도화하여, Spring Kafka의 `RetryTopicConfiguration`을 활용한 **비블로킹(Non-blocking) 재시도 및 DLQ(Dead Letter Queue) 전략**을 도입했습니다. 
+이를 통해 특정 알람 발송 실패가 전체 파티션 처리를 막는 **포이즌 필(Poison Pill)** 현상을 방지하고, 멱등성 검증 체계를 견고히 했습니다.
+
+#### 💡 주요 개선 사항
+
+**1. 논블로킹 재시도 (Non-blocking Retry) 도입**
+- **`RetryTopicConfiguration` 빈 추가**: 재시도 횟수에 따라 지수 백오프(Exponential Backoff: 3초 -> 6초 -> 12초 -> 24초)를 적용하여 `alarm-jobs-retry-0`, `retry-1` 등의 재시도 전용 토픽으로 자동 라우팅되도록 설정했습니다.
+- **포이즌 필 방어**: 메인 파티션(알람 발송) 스레드를 블로킹하지 않고 실패한 메시지만 별도 토픽으로 빠지므로, 다른 알람들의 지연을 원천 차단합니다.
+- **에러 분류**: `notRetryOn` 속성을 통해 재시도할 필요가 없는 예외(예: `IllegalArgumentException`)는 즉시 DLQ로 라우팅되도록 분기했습니다.
+
+**2. DLQ (Dead Letter Queue) 및 관측성 확보**
+- **DLT 핸들러 (`DltProcessor`)**: 최대 재시도(4회)를 초과하거나 재시도 불가능한 에러 발생 시, `alarm-jobs-dlt` 토픽으로 이동하여 수동 검토 및 알림 처리를 할 수 있는 DLT 전용 컨슈머를 추가했습니다.
+- **실행 로그 영속화 확장**: `AlarmExecutionLog` 및 DB 스키마에 `last_retry_at`과 `max_retry_exceeded` 컬럼을 추가하여, 각 재시도 회차별 상태와 최종 실패 여부를 RDB에 저장합니다. (`@Header(RetryTopicHeaders.DEFAULT_HEADER_ATTEMPTS)` 활용)
+
+**3. 비즈니스 로직과 에러 핸들링 분리**
+- **`KafkaAlarmJobConsumer` 리팩토링**: 이전에 혼재되어 있던 복잡한 `try-catch-finally` 구문과 수동 토픽 전송 코드를 제거하고, 프레임워크 레벨에 에러 처리를 위임하여 순수한 비즈니스 로직(알람 발송 및 멱등성 검증)만 남기도록 개선했습니다.
+
+#### 🛡️ 멱등성(Idempotency) 검증 전략
+재시도 토픽 방식을 사용할 경우 At-Least-Once (최소 한 번 이상 전달)가 보장되므로 중복 발송에 대한 방어가 필수적입니다.
+- **Redis 기반 분산 락/상태 값 (`proc:`)**: 메시지 수신 직후 Redis에 `PROCESSING` 상태로 선점하며, 처리가 완료되면 `DONE`으로 마킹합니다. 
+- **중복 무시**: 동일한 `senderId` + `uuid`로 이벤트가 재인입되더라도, 이미 `DONE`인 경우 처리를 스킵하여 안전한 재시도를 보장합니다.
+
+<br>
+
+## 9. 비동기 리액티브 파이프라인 설계 및 도입 배경 (Non-blocking Asynchronous Reactive Pipeline)
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **동기식 블로킹(Blocking) 컨슈머의 성능 한계**:
+  - 기존 Kafka 컨슈머는 외부 알람 발송 API를 호출하고 응답을 받을 때까지 동기적으로 스레드를 대기시켰습니다 (`.block()`).
+  - 외부 API의 네트워크 지연 시간(Latency) 동안 컨슈머의 처리 스레드가 꼼짝없이 블로킹되므로, 대량 트래픽 상황에서 CPU 자원이 넉넉함에도 불구하고 전체 처리 속도(Throughput/TPS)가 크게 제한되었습니다.
+  - 최악의 경우 외부 API 장애로 인한 지연/타임아웃 발생 시 컨슈머 스레드 풀이 고갈되어 시스템 장애로 쉽게 이어지는 취약점을 가집니다.
+- **배치 리스너(Batch Listener) 도입의 한계**:
+  - 한 번에 수십~수백 건의 메시지를 묶어 처리하는 배치 방식은 설정이 복잡하고, 일부 건만 실패했을 때 개별 건에 대한 지능적 재시도 및 DLQ 분할 적재를 구현하기 위한 아키텍처적 난이도가 극도로 높습니다.
+
+---
+
+#### ⚖️ 대안 비교
+
+**A안: 동기식 블로킹 컨슈머 + 스레드 풀 확장**
+- **동작 방식**: 기존 동기식 컨슈머 구조를 유지하며, 처리량을 늘리기 위해 컨슈머 스레드 풀의 개수를 대폭 늘리는 방식.
+- **장점**: 
+  - 리액티브 프로그래밍에 대한 학습 곡선 없이 단순하고 직관적인 동기식 코드를 유지할 수 있음.
+- **단점**: 
+  - 스레드가 늘어남에 따라 컨텍스트 스위칭 비용과 메모리 오버헤드가 급격히 증가함.
+  - 외부 API의 지연이 길어질 경우 결국 스레드가 모두 대기 상태에 빠져 근본적인 병목을 해결할 수 없음.
+
+**B안: 비동기 리액티브 파이프라인 (WebClient + CompletableFuture) (선택)**
+- **동작 방식**: 리액티브 WebClient와 Spring Kafka의 `CompletableFuture` 비동기 리스너 지원을 활용해 완전한 Non-blocking 비동기 파이프라인 구축.
+- **장점**: 
+  - **압도적인 병렬 처리량(TPS)**: 스레드가 외부 API 응답을 기다리지 않고 즉시 다른 작업을 처리하므로, 최소한의 시스템 자원(스레드)으로 초당 수만 건에 달하는 알람 전송 처리가 가능해짐.
+  - **에러 분류를 통한 장애 격리**: 리액티브 연산자(`onErrorResume`)를 통해 4xx(영구 실패)와 5xx/Timeout(일시 실패)을 명확히 분기하여 불필요한 재시도로 인한 포이즌 필(Poison Pill) 현상을 방지함.
+- **단점**: 
+  - 코틀린/자바 리액티브 스트림(WebFlux/Project Reactor) 기술 스택에 대한 학습 곡선이 존재함.
+  - 비동기 처리 흐름으로 인해 스레드 바인딩 기반의 디버깅 및 트레이싱(ThreadLocal 기반 Trace ID 등) 설정이 상대적으로 까다로움.
+
+**C안: 배치 리스너(Batch Listener) 도입**
+- **동작 방식**: 한 번에 수십~수백 건의 메시지를 묶어서 소비(Consume)하는 방식.
+- **장점**: 
+  - 카프카 폴링 횟수를 줄이고 대량 처리에 적합함.
+- **단점**: 
+  - 특정 건만 전송에 실패했을 때 개별 건에 대한 지능적 재시도 및 DLT 분할 적재를 구현하는 로직의 복잡도가 극도로 높음.
+  - 외부 API 호출 지연을 근본적으로 해소하지 못해 동기식으로 호출할 경우 처리 속도 개선에 한계가 있음.
+
+---
+
+#### ✅ 결정: B안 (비동기 리액티브 파이프라인 도입)
+- **선택 사유**:
+  - 알람 발송 시스템 특성상 **지연 시간(Latency)이 긴 외부 API 연동**이 핵심 병목 지점이며, 동시 발송 성능(Throughput)이 최우선 요구사항이기 때문입니다.
+  - 최소한의 스레드 자원을 사용해 고효율의 고성능 논블로킹 엔진을 갖추고, HTTP Status에 따라 실패 처리를 지능적으로 구분함으로써 안정적인 장애 격리를 달성할 수 있습니다.
+
+#### ❌ 포기한 것
+- **단순 동기식 블로킹 컨슈머 구조**: 구현이 단순하고 디버깅이 쉬우나 성능 확장성과 안정성에 치명적인 한계가 있어 포기하였습니다.
+- **배치 리스너(Batch Listener) 구조**: 대량의 처리가 가능하지만 개별 알람 전송 결과에 따른 예외 처리 및 DLQ 분기가 불필요하게 복잡하여 채택하지 않았습니다.
+
+---
+
+#### 💻 적용 코드 예시
+```kotlin
+@KafkaListener(topics = ["alarm-jobs"], groupId = "alarm-group")
+fun consumeAlarmJob(
+    record: ConsumerRecord<String, String>,
+    ack: Acknowledgment
+): CompletableFuture<Void?> {
+    val payload = objectMapper.readValue(record.value(), AlarmJobPayload::class.java)
+
+    return Mono.defer {
+        // 1. 외부 전송 API 호출 (Non-blocking)
+        notificationPort.sendNotification(payload.toDomain())
+    }
+    .doOnSuccess {
+        // 2. 성공 시 DB에 SENT 마킹
+        alarmService.markSent(payload.alarmId)
+    }
+    .onErrorResume { e ->
+        if (e is WebClientResponseException && e.statusCode.is4xxClientError) {
+            // 4xx: 영구 실패 처리 및 예외 복구 (Offset 커밋하여 재시도 방지)
+            alarmService.markFailed(payload.alarmId, e.message)
+            Mono.empty()
+        } else {
+            // 5xx / Timeout: 일시 실패 처리 및 예외 전파 (Kafka Retry 토픽 처리)
+            alarmService.markRetryWaitOrDead(payload.alarmId, e.message)
+            Mono.error(e)
+        }
+    }
+    .then()
+    .toFuture() // CompletableFuture로 변환하여 Spring Kafka로 핸오버
+}
+```

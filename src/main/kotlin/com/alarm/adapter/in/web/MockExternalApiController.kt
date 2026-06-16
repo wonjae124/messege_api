@@ -37,4 +37,16 @@ class MockExternalApiController {
         logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         return mapOf("status" to "ok", "received" to items.size)
     }
+
+    @PostMapping("/mock/send")
+    fun receiveSend(@RequestBody request: Map<String, Any?>): Map<String, Any> {
+        logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        logger.info("[MOCK EXTERNAL API] 단건 알림 수신 (sendMock Spec)")
+        logger.info("  requestId: {}", request["requestId"])
+        logger.info("  channelType: {}", request["channelType"])
+        logger.info("  receiver: {}", request["receiver"])
+        logger.info("  message: {}", request["message"])
+        logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        return mapOf("status" to "ok")
+    }
 }

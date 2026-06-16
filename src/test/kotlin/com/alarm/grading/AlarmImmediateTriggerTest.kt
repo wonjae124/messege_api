@@ -107,7 +107,7 @@ class AlarmImmediateTriggerTest {
         verify(notificationPort, atLeast(1)).sendNotification(anyList())
 
         // 4. 즉시 발생 후 알람 상태가 SENT로 변경되었는지 검증
-        val savedAlarm = alarmRepositoryPort.findById(alarmId)
+        val savedAlarm = alarmRepositoryPort.findById(alarmId.toLong())
         assertNotNull(savedAlarm)
         assertEquals(AlarmStatus.SENT, savedAlarm?.status)
     }

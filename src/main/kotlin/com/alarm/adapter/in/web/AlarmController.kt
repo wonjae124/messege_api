@@ -36,26 +36,26 @@ class AlarmController(
         @RequestHeader(value = "Idempotency-Key", required = false) idempotencyKey: String?,
         @RequestBody request: AlarmCreateRequest
     ): AlarmResponse {
-        val parsedId: String
+        val parsedId: Long
         val parsedSenderId: String
         
         if (!idempotencyKey.isNullOrBlank()) {
-            parsedId = idempotencyKey
             if (idempotencyKey.length > 32) {
                 parsedSenderId = idempotencyKey.substring(0, idempotencyKey.length - 32)
             } else {
                 parsedSenderId = "12345"
             }
+            parsedId = com.alarm.config.idempotencyKeyToLong(idempotencyKey)
         } else {
-            val uuidPart = UuidCreator.getTimeOrderedEpoch().toString().replace("-", "")
             parsedSenderId = "12345"
-            parsedId = "${parsedSenderId}${uuidPart}"
+            parsedId = com.alarm.config.SnowflakeIdGenerator.nextId()
         }
 
         val command = CreateAlarmUseCase.CreateAlarmCommand(
             id = parsedId,
             senderId = parsedSenderId,
             receiverId = request.receiverId ?: "defaultReceiver",
+            channelType = request.channelType ?: "SMS",
             name = request.name,
             payload = request.payload
         )
