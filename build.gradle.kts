@@ -38,6 +38,7 @@ dependencies {
 	implementation("io.micrometer:micrometer-tracing-bridge-otel")
 	implementation("io.opentelemetry:opentelemetry-exporter-otlp")
 	implementation("io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0:2.12.0-alpha")
+	implementation("net.logstash.logback:logstash-logback-encoder:7.4")
 
 	// Resilience4j (Circuit Breaker)
 	implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")

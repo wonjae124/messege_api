@@ -67,7 +67,10 @@ class OutboxEventPublisher(
                     alarmOutboxEventRepositoryPort.save(event)
                     if (isFinalFail) {
                         // 최종 실패: alarm 테이블 status = FAILED 로 동기화
-                        alarmRepositoryPort.updateStatusAndLocationInBatch(listOf(event.alarmId.toLong()), AlarmStatus.FAILED, "PUBLISHER")
+                        alarmRepositoryPort.findById(event.alarmId.toLong())?.let { a ->
+                            a.fail("PUBLISHER")
+                            alarmRepositoryPort.save(a)
+                        }
                         logger.error("Outbox: alarmId={} Kafka 발행 최종 실패 → FAILED", event.alarmId, e)
                     } else {
                         logger.warn("Outbox: alarmId={} Kafka 발행 일시 실패. 재시도 횟수: {}, 다음 재시도: {}", event.alarmId, event.retryCount, event.nextRetryAt, e)

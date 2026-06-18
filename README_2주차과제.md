@@ -590,3 +590,51 @@ val future = acquireTokenReactive()
         Mono.empty<Void>()
     })
 ```
+
+<br>
+
+## 12. 분산 환경의 추적성(Traceability)을 위한 로깅 아키텍처 및 JSON 로깅 도입
+
+#### ❓ 고민하게 된 구체적 문제 상황
+- **멀티 인스턴스 및 비동기 파이프라인의 추적 한계**: 애플리케이션이 스케일 아웃되어 여러 서버 인스턴스에서 구동되고, Kafka를 통한 비동기 메시지 처리가 도입됨에 따라, 특정 클라이언트의 알람 발송 요청이 어느 인스턴스를 거쳐 어떻게 처리되었는지 추적하기가 사실상 불가능해졌습니다.
+- **파편화된 로그 식별자**: 단순히 도메인 식별자인 `alarmId`만 로그에 출력할 경우, 동일 알람에 대한 재시도(Retry) 로그와 최초 발송 로그가 혼재되어 디버깅 효율이 크게 떨어졌습니다.
+
+---
+
+#### ⚖️ 대안 비교 및 결정
+
+**A안: 개발자가 직접 로깅 메시지에 식별자 삽입**
+- **방식**: 모든 `logger.info(...)` 호출 시 `requestId`, `traceId`, `alarmId`를 수동으로 파라미터로 넘김.
+- **단점**: 개발자 편의성이 극도로 떨어지고, 실수로 누락될 경우 추적의 끈이 끊어지는 휴먼 에러 위험이 매우 큼.
+
+**B안: MDC(Mapped Diagnostic Context) + JSON 로깅 + 헤더 전파 (선택)**
+- **방식**: 
+  - 진입점(Filter)에서 UUIDv7 기반의 `requestId`를 생성하여 MDC에 보관.
+  - Kafka 프로듀서 인터셉터에서 MDC의 `requestId`를 Kafka 헤더에 담아 전송하고, 컨슈머에서 다시 꺼내 MDC에 복원.
+  - Logback 설정을 통해 출력 포맷을 단순 텍스트가 아닌 **JSON 포맷(LogstashEncoder)**으로 변경.
+- **장점**: 개발자는 비즈니스 로그(`alarmId` 등)만 남겨도 인프라 레벨에서 완벽한 추적성을 보장. ELK, Datadog 등 모니터링 시스템에서 JSON 필드를 자동 파싱하여 압도적인 검색 편의성 제공.
+
+---
+
+#### ✅ 결정: B안 (UUIDv7 + MDC 분산 전파 및 JSON 로깅 아키텍처 채택)
+- **선택 사유**:
+  - 장애 발생 시 수많은 로그 사이에서 단일 요청의 생애 주기(Life Cycle)를 완벽하게 추적하기 위한 가장 이상적이고 현대적인 방식입니다.
+  - JSON 로깅을 통해 단순 문자열 파싱의 비효율을 없애고, 분산 로그 수집 시스템(Loki, ELK)과의 연동을 극대화했습니다.
+
+#### ❌ 포기한 것
+- **로컬 콘솔 로그의 인간 친화적 가독성**: JSON 포맷은 구조화되어 머신 리드(Machine-readable)에는 최적이나, 로컬 개발 시 콘솔에서 눈으로 읽기에는 기존 텍스트 포맷보다 다소 복잡해보이는 불편함을 감수했습니다.
+
+#### 💻 적용 코드 예시 (핵심 요약)
+```kotlin
+// 1. 진입점: RequestIdFilter에서 UUIDv7 발급 및 MDC 저장
+var requestId = request.getHeader("X-Request-Id") ?: generator.generate().toString()
+MDC.put("requestId", requestId)
+
+// 2. 파이프라인 전파: KafkaRequestIdInterceptor를 통한 헤더 주입
+val requestId = MDC.get("requestId")
+record.headers().add("X-Request-Id", requestId.toByteArray(Charsets.UTF_8))
+
+// 3. 로그 출력: LogstashEncoder를 통한 JSON 자동 직렬화 (logback-spring.xml)
+<encoder class="net.logstash.logback.encoder.LogstashEncoder" />
+```
+

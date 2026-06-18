@@ -78,6 +78,8 @@ services:
       - REDIS_PORT=6379
       - MOCK_API_URL=http://sendmock:8081
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4318
+      - OTEL_SERVICE_NAME=alarm-api
+      - OTEL_LOGS_EXPORTER=otlp
 
   sendmock:
     build:

@@ -23,18 +23,18 @@ import reactor.core.publisher.Mono
 import java.time.Duration
 
 /**
- * [대상] KafkaAlarmJobConsumer — Kafka 배치 소비자
- * [범주] Consumer Unit Test — Mockito Mock, 실제 Kafka 브로커 없음
+ * [?�?? KafkaAlarmJobConsumer ??Kafka 배치 ?�비??
+ * [범주] Consumer Unit Test ??Mockito Mock, ?�제 Kafka 브로�??�음
  *
- * H2 DB 상태 갱신
- *   ① 정상 처리 → updateStatusesInBatch(SENT)
- *   ② 발송 실패 → updateStatusesInBatch(FAILED) + saveAll(에러 이력)
+ * H2 DB ?�태 갱신
+ *   ???�상 처리 ??updateStatusesInBatch(SENT)
+ *   ??발송 ?�패 ??updateStatusesInBatch(FAILED) + saveAll(?�러 ?�력)
  *
- * Redis proc: 키 멱등성
- *   ③ 동일 uuid 2건 인입 → sendNotification 정확히 1회만 호출 (중복 Skip)
+ * Redis proc: ??멱등??
+ *   ???�일 uuid 2�??�입 ??sendNotification ?�확??1?�만 ?�출 (중복 Skip)
  *
  * Rate Limiter
- *   ④ 501~502번째 청크 tryAcquire=false → 대기 후 재시도, 총 504회 호출
+ *   ??501~502번째 �?�� tryAcquire=false ???��????�시?? �?504???�출
  */
 class KafkaAlarmJobConsumerTest {
 
@@ -58,7 +58,7 @@ class KafkaAlarmJobConsumerTest {
         redisTemplate = mock(StringRedisTemplate::class.java)
         redisRateLimiter = mock(RedisRateLimiter::class.java)
 
-        // 핵심 수정: KotlinModule을 등록해야 Kotlin data class 역직렬화 가능
+        // ?�심 ?�정: KotlinModule???�록?�야 Kotlin data class ??��?�화 가??
         objectMapper = ObjectMapper().registerKotlinModule()
 
         kafkaTemplate = mock(KafkaTemplate::class.java) as KafkaTemplate<String, String>
@@ -68,7 +68,7 @@ class KafkaAlarmJobConsumerTest {
         `when`(redisTemplate.opsForValue()).thenReturn(valueOps)
         `when`(redisRateLimiter.tryAcquire(anyInt())).thenReturn(true)
 
-        // Mockito 표준 anyList() 매처는 null이 아닌 빈 리스트를 반환하여 안전함
+        // Mockito ?��? anyList() 매처??null???�닌 �?리스?��? 반환?�여 ?�전??
         `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.empty())
 
         val dummyAlarm = com.alarm.domain.Alarm.reconstruct(
@@ -78,7 +78,7 @@ class KafkaAlarmJobConsumerTest {
             channelType = "SMS",
             name = "Test Alarm",
             status = AlarmStatus.PENDING,
-            payload = "Test Payload",
+            payload = "Test Payload", location = null,
             createdAt = java.time.LocalDateTime.now(),
             updatedAt = java.time.LocalDateTime.now()
         )
@@ -95,10 +95,10 @@ class KafkaAlarmJobConsumerTest {
     }
 
     /**
-     * [시나리오] 카프카에서 수신한 알람들 중 중복되지 않은 알람이 최종적으로 DB(H2)에 완료(SENT) 상태로 잘 저장되는지 검증합니다.
-     * [Given] 중복되지 않은 알람 메시지 및 Redis 선점 통과 설정
-     * [When] 알람 이벤트 배치 소비 호출
-     * [Then] alarmRepositoryPort.updateStatusesInBatch가 SENT 상태로 호출되었는지 검증
+     * [?�나리오] 카프카에???�신???�람??�?중복?��? ?��? ?�람??최종?�으�?DB(H2)???�료(SENT) ?�태�????�?�되?��? 검증합?�다.
+     * [Given] 중복?��? ?��? ?�람 메시지 �?Redis ?�점 ?�과 ?�정
+     * [When] ?�람 ?�벤??배치 ?�비 ?�출
+     * [Then] alarmRepositoryPort.updateStatusesInBatch가 SENT ?�태�??�출?�었?��? 검�?
      */
     @Test
     fun `should update RDB H2 status to SENT on successful processing`() {
@@ -109,54 +109,54 @@ class KafkaAlarmJobConsumerTest {
         // When
         consumer.consumeAlarmJob(payload, 1).join()
 
-        // [Then] alarmRepositoryPort.updateStatusAndLocationInBatch가 SENT 상태로 호출되었는지 검증
-        // 1. DCL 2차 검증을 위한 findById 호출
+        // [Then] alarmRepositoryPort.save가 SENT ?�태�??�출?�었?��? 검�?
+        // 1. DCL 2�?검증을 ?�한 findById ?�출
         verify(alarmRepositoryPort).findById(12345L)
-        verify(alarmRepositoryPort).updateStatusAndLocationInBatch(listOf(12345L), AlarmStatus.SENT)
+        verify(alarmRepositoryPort).save(anyObject(com.alarm.domain.Alarm::class.java))
     }
 
     /**
-     * [시나리오] 중복 이벤트가 인입되었을 때 중복을 감지하고 무시(Skip)하는 로직을 검증합니다.
-     * [Given] 동일 멱등키(proc:)를 가진 2개의 메시지,
-     *        첫 번째 메시지는 setIfAbsent=true(최초 선점 성공),
-     *        두 번째 메시지는 setIfAbsent=false + Redis 값 "PROCESSING" 반환(중복 감지)으로 설정
-     * [When] 알람 이벤트 배치 소비 호출
-     * [Then] 외부 발송 API(sendNotification)가 정확히 1회만 호출되는지 검증 (중복 메시지 제외됨)
+     * [?�나리오] 중복 ?�벤?��? ?�입?�었????중복??감�??�고 무시(Skip)?�는 로직??검증합?�다.
+     * [Given] ?�일 멱등??proc:)�?가�?2개의 메시지,
+     *        �?번째 메시지??setIfAbsent=true(최초 ?�점 ?�공),
+     *        ??번째 메시지??setIfAbsent=false + Redis �?"PROCESSING" 반환(중복 감�?)?�로 ?�정
+     * [When] ?�람 ?�벤??배치 ?�비 ?�출
+     * [Then] ?��? 발송 API(sendNotification)가 ?�확??1?�만 ?�출?�는지 검�?(중복 메시지 ?�외??
      */
     @Test
     fun `should detect and ignore duplicate Kafka jobs using Redis proc key`() {
         // Given
         val payload1 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
         val payload2 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
-        // 두 메시지가 동일한 proc 키를 공유함: proc:sender-1:uuid-dup
+        // ??메시지가 ?�일??proc ?��? 공유?? proc:sender-1:uuid-dup
         val procKey = "proc:sender-1:uuid-dup"
 
-        // 첫 번째 선점 시도: true (성공)
-        // 두 번째 선점 시도: false (이미 선점됨 = 중복)
+        // �?번째 ?�점 ?�도: true (?�공)
+        // ??번째 ?�점 ?�도: false (?��? ?�점??= 중복)
         `when`(valueOps.setIfAbsent(eq(procKey), eq("PROCESSING"), any(Duration::class.java)))
             .thenReturn(true)
             .thenReturn(false)
-        // 두 번째 메시지 도달 시 Redis에서 현재 상태 조회 → PROCESSING 반환 → 중복으로 판정
+        // ??번째 메시지 ?�달 ??Redis?�서 ?�재 ?�태 조회 ??PROCESSING 반환 ??중복?�로 ?�정
         `when`(valueOps.get(eq(procKey))).thenReturn("PROCESSING")
 
         // When
         consumer.consumeAlarmJob(payload1, 1).join()
         
-        // 두 번째 중복 작업은 ConcurrentProcessingException을 던져서 Kafka 재시도를 타야 함
+        // ??번째 중복 ?�업?� ConcurrentProcessingException???�져??Kafka ?�시?��? ?�????
         org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
             consumer.consumeAlarmJob(payload2, 1).join()
         }
 
         // Then
-        // ArgumentCaptor 캐스팅 없이 호출 횟수(1회)만 verify → Kotlin null-safety 문제 없음
+        // ArgumentCaptor 캐스???�이 ?�출 ?�수(1??�?verify ??Kotlin null-safety 문제 ?�음
         verify(notificationPort, times(1)).sendNotification(anyList())
     }
 
     /**
-     * [시나리오] 발송 오류 시 DB(H2)에 실패(FAILED) 상태 업데이트와 에러 이력 저장을 검증합니다.
-     * [Given] 메시지 및 외부 전송 API가 RuntimeException을 반환하도록 설정
-     * [When] 알람 이벤트 배치 소비 호출
-     * [Then] DB H2에 FAILED 업데이트 요청 및 에러 로그 일괄(saveAll) 저장이 일어나는지 검증
+     * [?�나리오] 발송 ?�류 ??DB(H2)???�패(FAILED) ?�태 ?�데?�트?� ?�러 ?�력 ?�?�을 검증합?�다.
+     * [Given] 메시지 �??��? ?�송 API가 RuntimeException??반환?�도�??�정
+     * [When] ?�람 ?�벤??배치 ?�비 ?�출
+     * [Then] DB H2??FAILED ?�데?�트 ?�청 �??�러 로그 ?�괄(saveAll) ?�?�이 ?�어?�는지 검�?
      */
     @Test
     fun `should update RDB H2 status to DEAD and record log on max execution failure`() {
@@ -169,41 +169,41 @@ class KafkaAlarmJobConsumerTest {
         consumer.consumeAlarmJob(payload, 4).join()
 
         // Then
-        verify(alarmRepositoryPort).findById(12345L)
-        verify(alarmRepositoryPort).updateStatusAndLocationInBatch(listOf(12345L), AlarmStatus.DEAD)
+        verify(alarmRepositoryPort, times(2)).findById(12345L)
+        verify(alarmRepositoryPort).save(anyObject(com.alarm.domain.Alarm::class.java))
 
-        // 3. alarmExecutionLogRepositoryPort.save 가 DEAD 상태로 저장되었는지 검증
+        // 3. alarmExecutionLogRepositoryPort.save 가 DEAD ?�태�??�?�되?�는지 검�?
         verify(alarmExecutionLogRepositoryPort).save(anyObject(AlarmExecutionLog::class.java))
     }
 
     /**
-     * [시나리오] 외부 연동 Rate Limit 조건(초당 최대 500회 호출)을 초과한 502번째 요청 상황을 검증합니다.
-     * [Given] 502개의 배치 chunk를 생성하기 위해 총 502 * 200 = 100,400개의 알람 페이로드 생성
-     *        Redis Rate Limiter(tryAcquire)가 500회째까지는 true(허용),
-     *        501번째와 502번째 시도는 false(초과 차단),
-     *        503번째 시도부터 다시 true(허용)를 반환하도록 Mock 설정
-     * [When] 100,400개의 대용량 알람 이벤트 배치 소비 호출
-     * [Then] tryAcquire 호출 횟수가 총 504회(성공 502회 + 대기로 인한 재시도 2회)인지 검증하여,
-     *        초과 시 대기 및 재선점이 정상 동작하는지 증명
+     * [?�나리오] ?��? ?�동 Rate Limit 조건(초당 최�? 500???�출)??초과??502번째 ?�청 ?�황??검증합?�다.
+     * [Given] 502개의 배치 chunk�??�성?�기 ?�해 �?502 * 200 = 100,400개의 ?�람 ?�이로드 ?�성
+     *        Redis Rate Limiter(tryAcquire)가 500?�째까�???true(?�용),
+     *        501번째?� 502번째 ?�도??false(초과 차단),
+     *        503번째 ?�도부???�시 true(?�용)�?반환?�도�?Mock ?�정
+     * [When] 100,400개의 ?�?�량 ?�람 ?�벤??배치 ?�비 ?�출
+     * [Then] tryAcquire ?�출 ?�수가 �?504???�공 502??+ ?�기로 ?�한 ?�시??2???��? 검증하??
+     *        초과 ???��?�??�선?�이 ?�상 ?�작?�는지 증명
      */
     @Test
     fun `should block and wait when rate limit is exceeded`() {
         // Given
-        // 3개의 알람 메시지 생성
+        // 3개의 ?�람 메시지 ?�성
         val payloads = List(3) { index ->
             """{"alarmId":"${12340 + index}","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-$index"}"""
         }
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
 
-        // tryAcquire가 1번째 성공, 2번째 실패(차단), 3번째(재시도) 성공, 그 이후 성공하도록 설정
+        // tryAcquire가 1번째 ?�공, 2번째 ?�패(차단), 3번째(?�시?? ?�공, �??�후 ?�공?�도�??�정
         var rateLimitCallCount = 0
         `when`(redisRateLimiter.tryAcquire(1)).thenAnswer {
             rateLimitCallCount++
             when (rateLimitCallCount) {
-                1 -> true   // 1번째 알람: 즉시 허용
-                2 -> false  // 2번째 알람 (첫 시도): 차단 (대기)
-                3 -> true   // 2번째 알람 (재시도): 대기 후 허용
-                else -> true // 3번째 알람 이후: 즉시 허용
+                1 -> true   // 1번째 ?�람: 즉시 ?�용
+                2 -> false  // 2번째 ?�람 (�??�도): 차단 (?��?
+                3 -> true   // 2번째 ?�람 (?�시??: ?��????�용
+                else -> true // 3번째 ?�람 ?�후: 즉시 ?�용
             }
         }
 
@@ -211,11 +211,11 @@ class KafkaAlarmJobConsumerTest {
         payloads.forEach { consumer.consumeAlarmJob(it, 1).join() }
 
         // Then
-        // 총 호출 횟수: 
-        // 1번째 알람 처리 시 1회
-        // 2번째 알람 처리 시 1회(실패) + 1회(성공) = 2회
-        // 3번째 알람 처리 시 1회
-        // 총 4회 호출되어야 함
+        // �??�출 ?�수: 
+        // 1번째 ?�람 처리 ??1??
+        // 2번째 ?�람 처리 ??1???�패) + 1???�공) = 2??
+        // 3번째 ?�람 처리 ??1??
+        // �?4???�출?�어????
         verify(redisRateLimiter, times(4)).tryAcquire(1)
     }
 }

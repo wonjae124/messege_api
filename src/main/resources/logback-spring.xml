@@ -2,9 +2,7 @@
 <configuration>
     <!-- 콘솔 출력 설정 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [requestId=%X{requestId}] [traceId=%X{traceId}] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
     </appender>
 
     <!-- OpenTelemetry OTLP Appender (Loki 전송용) -->
@@ -20,9 +18,7 @@
             <fileNamePattern>logs/kafka-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [requestId=%X{requestId}] [traceId=%X{traceId}] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
     </appender>
 
     <!-- 애플리케이션 에러 로그 파일 설정 (logs/app.log) -->
@@ -35,9 +31,7 @@
             <fileNamePattern>logs/app-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [requestId=%X{requestId}] [traceId=%X{traceId}] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
     </appender>
 
     <!-- 애플리케이션 전체 로그 파일 설정 (logs/app-info.log) -->
@@ -47,9 +41,7 @@
             <fileNamePattern>logs/app-info-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [requestId=%X{requestId}] [traceId=%X{traceId}] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
     </appender>
 
     <!-- 카프카 패키지 로그 분리 -->
