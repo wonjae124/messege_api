@@ -12,6 +12,9 @@ import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.*
 import org.mockito.Mockito
 import org.mockito.Mockito.*
+import org.junit.jupiter.api.assertThrows
+import com.alarm.application.port.`in`.UpdateAlarmUseCase
+import com.alarm.exception.AlarmNotFoundException
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
 import com.alarm.exception.DuplicateRequestException
@@ -100,22 +103,92 @@ class AlarmServiceTest {
      * [Then] DuplicateRequestException 예외가 발생하는지 검증
      */
     @Test
-    fun `createAlarm - should throw CONFLICT exception on duplicate request`() {
+    fun `createAlarm - should return existing alarm on duplicate request if already in DB`() {
         // Given
         val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = 12345L,
-            senderId = "sender-1",
-            receiverId = "receiver-1",
-            channelType = "SMS",
-            name = "Test Alarm",
-            payload = "{}"
+            id = 12345L, senderId = "sender-1", receiverId = "receiver-1",
+            channelType = "SMS", name = "Test Alarm", payload = "{}"
         )
         `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(dummyAlarm)
+
+        // When
+        val result = alarmService.createAlarm(command)
+
+        // Then
+        assertEquals(dummyAlarm, result)
+        verify(alarmRepositoryPort, never()).save(any())
+        verify(alarmOutboxEventRepositoryPort, never()).save(any())
+    }
+
+    @Test
+    fun `createAlarm - should throw CONFLICT exception if duplicate request and not in DB`() {
+        // Given
+        val command = CreateAlarmUseCase.CreateAlarmCommand(
+            id = 12345L, senderId = "sender-1", receiverId = "receiver-1",
+            channelType = "SMS", name = "Test Alarm", payload = "{}"
+        )
+        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(null)
 
         // When & Then
         assertThrows<DuplicateRequestException> {
             alarmService.createAlarm(command)
         }
-        verify(alarmRepositoryPort, never()).save(any(Alarm::class.java) ?: dummyAlarm)
+        verify(alarmRepositoryPort, never()).save(any())
+        verify(alarmOutboxEventRepositoryPort, never()).save(any())
+    }
+
+    @Test
+    fun `getAlarm - should return alarm when found`() {
+        val id = "12345"
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(dummyAlarm)
+        
+        val result = alarmService.getAlarm(id)
+        
+        assertNotNull(result)
+        assertEquals(dummyAlarm, result)
+    }
+
+    @Test
+    fun `getAlarm - should throw NotFound when not found`() {
+        val id = "999"
+        `when`(alarmRepositoryPort.findById(999L)).thenReturn(null)
+        
+        assertThrows<AlarmNotFoundException> {
+            alarmService.getAlarm(id)
+        }
+    }
+
+    @Test
+    fun `updateAlarm - should update alarm status`() {
+        val command = UpdateAlarmUseCase.UpdateAlarmCommand(
+            id = "12345",
+            status = AlarmStatus.SENT,
+            name = "Updated",
+            payload = "{}"
+        )
+        val alarmToUpdate = Alarm.create(
+            id = 12345L,
+            senderId = "s", receiverId = "r", channelType = "SMS", name = "Old", payload = null
+        )
+        alarmToUpdate.markPending()
+
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(alarmToUpdate)
+        `when`(alarmRepositoryPort.save(any(Alarm::class.java) ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
+
+        val result = alarmService.updateAlarm(command)
+
+        assertEquals(AlarmStatus.SENT, result.status)
+        assertEquals("Updated", result.name)
+    }
+
+    @Test
+    fun `deleteAlarm - should delete alarm`() {
+        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(dummyAlarm)
+        
+        alarmService.deleteAlarm("12345")
+        
+        verify(alarmRepositoryPort).delete(dummyAlarm)
     }
 }

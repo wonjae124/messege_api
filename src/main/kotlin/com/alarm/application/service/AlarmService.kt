@@ -55,7 +55,11 @@ class AlarmService(
             Duration.ofMinutes(5)
         )
         if (isFirstRequest != true) {
-            throw DuplicateRequestException("Duplicate request based on Idempotency-Key")
+            val existingAlarm = alarmRepositoryPort.findById(command.id)
+            if (existingAlarm != null) {
+                return existingAlarm
+            }
+            throw DuplicateRequestException("Duplicate request based on Idempotency-Key: processing")
         }
 
         try {

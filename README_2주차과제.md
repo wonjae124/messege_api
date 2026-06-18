@@ -1,6 +1,67 @@
 # 2주차 과제 - 아키텍처 및 동시성 제어 의사결정
 
-## 1. Outbox Pattern 폴링 동시성 제어 (멀티 인스턴스 환경)
+## 🏗️ 시스템 아키텍처 (System Architecture)
+
+현재 `docker-compose.yml` 및 `Dockerfile`을 기반으로 구성된 전체 시스템 아키텍처 다이어그램입니다.
+
+```mermaid
+graph TD
+    Client([Client / API Caller]) -->|HTTP :8080| AlarmAPI[Alarm API Server<br>Spring Boot + Java 21]
+
+    subgraph "Messaging & Cache (동시성 및 비동기 처리)"
+        AlarmAPI <-->|Produce / Consume| Kafka[Kafka Broker<br>confluentinc/cp-kafka]
+        Kafka --- Zookeeper[Zookeeper]
+        AlarmAPI <-->|Distributed Lock & Cache| Redis[Redis 7.2]
+    end
+
+    subgraph "Storage (상태 관리)"
+        AlarmAPI <-->|JDBC TCP :1521| H2[H2 Database<br>Alarm & Outbox Table]
+    end
+
+    subgraph "External System (외부 연동)"
+        AlarmAPI -->|HTTP REST :8081| SendMock[SendMock API<br>Mock Notification Server]
+    end
+
+    subgraph "Observability (모니터링 및 추적)"
+        AlarmAPI -->|OTLP Agent :4318| OTEL[Grafana OTEL-LGTM<br>Logs / Metrics / Traces]
+    end
+```
+
+## 📝 개괄 (Overview)
+본 문서는 대규모 트래픽을 처리하는 알람 발송 시스템의 아키텍처 개선 및 동시성 제어 과정에서 발생한 문제점들과 이를 해결하기 위한 의사결정 내역을 정리한 문서입니다. 멀티 인스턴스 환경에서의 락(Lock) 제어, 메시지 큐(Kafka)를 활용한 비동기 파이프라인, 성능 최적화 및 모니터링 체계 구축 등 다양한 엔지니어링 챌린지와 해결 과정을 담고 있습니다.
+
+## 📖 목차 (Table of Contents)
+
+**1. 데이터베이스 및 식별자 아키텍처**
+- [1.1. PK 최적화: UUIDv7 및 정수형 식별자 도입 (1차)](#11-pk-최적화-uuidv7-및-정수형-식별자-도입-1차)
+- [1.2. PK 단일화: Snowflake ID와 해시 기반 멱등성 키 설계 (최종)](#12-pk-단일화-snowflake-id와-해시-기반-멱등성-키-설계-최종)
+
+**2. 동시성 제어 및 멱등성 설계**
+- [2.1. Outbox 스케줄러 동시성 제어 (멀티 인스턴스 환경)](#21-outbox-스케줄러-동시성-제어-멀티-인스턴스-환경)
+- [2.2. Consumer 멱등성 방어선 구축 (Redis & DB DCL)](#22-consumer-멱등성-방어선-구축-redis--db-dcl)
+- [2.3. Producer(API) 멱등성 보장 및 DB 장애 격리](#23-producerapi-멱등성-보장-및-db-장애-격리)
+
+**3. 비동기 메시징 및 성능 최적화**
+- [3.1. Kafka 기반 비동기 파이프라인 및 DLQ 구축](#31-kafka-기반-비동기-파이프라인-및-dlq-구축)
+- [3.2. Non-blocking 리액티브 파이프라인 도입 (WebClient)](#32-non-blocking-리액티브-파이프라인-도입-webclient)
+- [3.3. 동기식 DB 접근(JPA/JDBC)의 블로킹 스레드 격리](#33-동기식-db-접근jpajdbc의-블로킹-스레드-격리)
+
+**4. 데이터 정합성 및 상태 파이프라인**
+- [4.1. 알람 전송 생명주기 상태 세분화 (Client -> Kafka -> Redis)](#41-알람-전송-생명주기-상태-세분화-client---kafka---redis)
+- [4.2. Outbox 장애 복구를 위한 재시도(Retry) 및 동기화 전략](#42-outbox-장애-복구를-위한-재시도retry-및-동기화-전략)
+
+**5. 운영 및 모니터링 체계**
+- [5.1. 분산 환경 추적성을 위한 MDC 및 JSON 로깅 아키텍처](#51-분산-환경-추적성을-위한-mdc-및-json-로깅-아키텍처)
+- [5.2. 인프라 및 아키텍처 보완 (Kafka 클러스터링, Rate Limiter 등)](#52-인프라-및-아키텍처-보완-kafka-클러스터링-rate-limiter-등)
+
+## 🚀 진행 내용 요약 (Progress Summary)
+- **동시성 및 멱등성 제어**: Outbox 폴링 시 데드락 방지를 위한 DB 비관적 락(`FOR UPDATE SKIP LOCKED`) 적용 및 Redis 락과 DB 상태 기반의 DCL(Double-Checked Locking) 구조 확립.
+- **아키텍처 고도화**: Kafka 기반 비동기 알람 파이프라인 최적화, WebClient와 `CompletableFuture`를 이용한 Non-blocking 컨슈머 구축, Schedulers.boundedElastic을 이용한 데이터베이스 블로킹 격리.
+- **신뢰성 및 추적성 강화**: 메시지 유실 방지를 위한 재시도 백오프 적용, DLQ(Dead Letter Queue) 도입, Snowflake ID와 해시 기반의 단일 PK 성능 최적화, MDC를 활용한 분산 환경 JSON 로깅 도입.
+
+---
+
+## 2.1. Outbox 스케줄러 동시성 제어 (멀티 인스턴스 환경)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **Outbox Pattern 도입**: PENDING 상태 이벤트를 1초마다 읽어 Kafka로 발행하는 스케줄러 구현
@@ -57,7 +118,7 @@ FOR UPDATE SKIP LOCKED;
 
 <br>
 
-## 2. Outbox 발행 재시도(Retry) 및 원본 상태 동기화
+## 4.2. Outbox 장애 복구를 위한 재시도(Retry) 및 동기화 전략
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **Outbox 발행 실패**: Kafka 브로커 일시 장애나 네트워크 단절 시, Outbox 이벤트 발행이 실패하게 됨.
@@ -111,7 +172,7 @@ if (publishSuccess) {
 
 <br>
 
-## 3. RDB 기반의 알람 전송 파이프라인 상태 관리 세분화 (Client -> Kafka -> Redis)
+## 4.1. 알람 전송 생명주기 상태 세분화 (Client -> Kafka -> Redis)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **추적 불가 및 상태 파편화**: 클라이언트의 요청이 DB에 저장된 후, Kafka를 거쳐 Redis 분산 락 및 외부 API로 전달되는 복잡한 비동기 전송 과정에서 특정 메시지가 어느 구간에서 실패했는지 추적하기 어려웠습니다.
@@ -172,7 +233,7 @@ graph TD
 
 <br>
 
-## 4. Consumer 멱등성이 휘발성 Redis 키에만 의존하는 문제 해결
+## 2.2. Consumer 멱등성 방어선 구축 (Redis & DB DCL)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **기존 구조의 한계**: 기존 컨슈머는 중복 판단을 오직 Redis의 `proc:` 키(TTL 3분)에만 의존했으며, DB의 알람 상태는 조회하지 않았습니다.
@@ -237,7 +298,7 @@ try {
 
 <br>
 
-## 5. Producer(API) 멱등성 및 DB 장애 복구 설계
+## 2.3. Producer(API) 멱등성 보장 및 DB 장애 격리
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **캐시와 DB의 라이프사이클 불일치**: `createAlarm` API에서 중복 요청을 방어하기 위해 Redis의 `setIfAbsent`를 이용해 5분짜리 락(Idempotency Key)을 잡고 DB에 알람과 Outbox를 저장함.
@@ -291,7 +352,7 @@ try {
 
 <br>
 
-## 6. 기타 아키텍처 및 설정 보완 내역 (feature2 브랜치 반영분)
+## 5.2. 인프라 및 아키텍처 보완 (Kafka 클러스터링, Rate Limiter 등)
 
 main 브랜치의 기존 `README.md` 아키텍처 문서와 비교하여, 현재 브랜치에서 추가적으로 고도화 및 보완된 사항들입니다.
 
@@ -309,7 +370,7 @@ main 브랜치의 기존 `README.md` 아키텍처 문서와 비교하여, 현재
 
 <br>
 
-## 7. PK 채번 방식 및 UUIDv7 전략 도입 (1차 설계)
+## 1.1. PK 최적화: UUIDv7 및 정수형 식별자 도입 (1차)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **UUIDv4와 클러스터드 인덱스 단편화**: 기존 시스템은 레코드 식별자(PK)로 `UUIDv4`를 사용하고 있었습니다. UUIDv4는 완전한 난수(랜덤)이므로, 데이터베이스의 PK(클러스터드 인덱스)로 사용될 경우 새로운 레코드가 인덱스 중간중간에 삽입되어 **페이지 분할(Page Split) 현상**을 심하게 유발합니다.
@@ -332,7 +393,7 @@ main 브랜치의 기존 `README.md` 아키텍처 문서와 비교하여, 현재
 
 <br>
 
-## 8. Snowflake ID 및 멱등성 키 정수 변환을 통한 PK 단일화 도입 (2차 설계 - 최종 결정)
+## 1.2. PK 단일화: Snowflake ID와 해시 기반 멱등성 키 설계 (최종)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **기존 설계의 복잡성 (`seq`와 `id` 분리)**: 기존에는 DB 성능(클러스터드 인덱스 삽입 성능)을 위해 인공 키인 `seq` (`BIGINT AUTO_INCREMENT`)를 PK로 잡고, 클라이언트가 주는 멱등성 키 `id` (`VARCHAR/String`)를 유니크 컬럼으로 쪼개서 관리했습니다. 
@@ -421,7 +482,7 @@ val parsedId: Long = if (!idempotencyKey.isNullOrBlank()) {
 
 <br>
 
-## 9. Kafka 기반 비동기 알람 메시지 처리 고도화 및 멱등성 보장 (DLQ)
+## 3.1. Kafka 기반 비동기 파이프라인 및 DLQ 구축
 
 #### ❓ 개요
 기존 Kafka 컨슈머의 단순 `try-catch` 방식의 에러 처리와 수동 재시도 로직을 고도화하여, Spring Kafka의 `RetryTopicConfiguration`을 활용한 **비블로킹(Non-blocking) 재시도 및 DLQ(Dead Letter Queue) 전략**을 도입했습니다. 
@@ -448,7 +509,7 @@ val parsedId: Long = if (!idempotencyKey.isNullOrBlank()) {
 
 <br>
 
-## 10. 비동기 리액티브 파이프라인 설계 및 도입 배경 (Non-blocking Asynchronous Reactive Pipeline)
+## 3.2. Non-blocking 리액티브 파이프라인 도입 (WebClient)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **동기식 블로킹(Blocking) 컨슈머의 성능 한계**:
@@ -535,7 +596,7 @@ fun consumeAlarmJob(
 
 <br>
 
-## 11. 데이터 액세스 기술(JPA/JDBC)의 블로킹 제약 극복 및 격리 설계
+## 3.3. 동기식 DB 접근(JPA/JDBC)의 블로킹 스레드 격리
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **리액티브 파이프라인과 동기 블로킹 JPA/JDBC의 공존**: Kafka 리스너(`KafkaAlarmJobConsumer`)는 리액티브 논블로킹 스트림으로 설계되었으나, 실제 상태 전이 및 로깅을 저장하는 영속성 기술은 동기 블로킹 방식의 **Spring Data JPA 및 JDBC(H2/MySQL)**를 사용하고 있음.
@@ -593,7 +654,7 @@ val future = acquireTokenReactive()
 
 <br>
 
-## 12. 분산 환경의 추적성(Traceability)을 위한 로깅 아키텍처 및 JSON 로깅 도입
+## 5.1. 분산 환경 추적성을 위한 MDC 및 JSON 로깅 아키텍처
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **멀티 인스턴스 및 비동기 파이프라인의 추적 한계**: 애플리케이션이 스케일 아웃되어 여러 서버 인스턴스에서 구동되고, Kafka를 통한 비동기 메시지 처리가 도입됨에 따라, 특정 클라이언트의 알람 발송 요청이 어느 인스턴스를 거쳐 어떻게 처리되었는지 추적하기가 사실상 불가능해졌습니다.
