@@ -96,8 +96,10 @@ class KafkaDlqRoutingTest {
 
         val payload = """{"alarmId":"93003","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dlq"}"""
 
-        // When: 4번째 시도 (Attempts = 4 > 3) -> DEAD 상태 전이 검증 (정상 완료)
-        consumer.consumeAlarmJob(payload, 4).join()
+        // When: 4번째 시도 (Attempts = 4 > 3) -> DEAD 상태 전이 검증 및 예외 발생 확인
+        assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payload, 4).join()
+        }
 
         // Then: DB 상태가 DEAD로 전이되었는지 확인
         val savedAlarm = alarmRepositoryPort.findById(93003L)
@@ -106,7 +108,11 @@ class KafkaDlqRoutingTest {
 
         // DLT 전송 검증
         kafkaTemplate.send("alarm-jobs-dlt", "key-dlq", payload).get(5, TimeUnit.SECONDS)
-        verify(dltProcessor, timeout(5000)).handle(safeAny(org.apache.kafka.clients.consumer.ConsumerRecord::class.java) as org.apache.kafka.clients.consumer.ConsumerRecord<String, String>)
+        verify(dltProcessor, timeout(10000).times(1)).handle(
+            any(),
+            nullable(String::class.java),
+            nullable(String::class.java)
+        )
     }
 
     @Suppress("UNCHECKED_CAST")

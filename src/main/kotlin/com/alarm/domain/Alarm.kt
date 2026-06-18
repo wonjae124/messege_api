@@ -17,6 +17,7 @@ class Alarm private constructor(
     var name: String,
     var status: AlarmStatus,
     var payload: String?,
+    var location: String?,
     val createdAt: LocalDateTime,
     var updatedAt: LocalDateTime
 ) {
@@ -41,6 +42,7 @@ class Alarm private constructor(
                 name = name,
                 status = AlarmStatus.PENDING,
                 payload = payload,
+                location = null,
                 createdAt = now,
                 updatedAt = now
             )
@@ -55,10 +57,11 @@ class Alarm private constructor(
             name: String,
             status: AlarmStatus,
             payload: String?,
+            location: String?,
             createdAt: LocalDateTime,
             updatedAt: LocalDateTime
         ): Alarm {
-            return Alarm(id, senderId, receiverId, channelType, name, status, payload, createdAt, updatedAt)
+            return Alarm(id, senderId, receiverId, channelType, name, status, payload, location, createdAt, updatedAt)
         }
     }
 
@@ -82,8 +85,15 @@ class Alarm private constructor(
         this.updatedAt = LocalDateTime.now()
     }
 
-    fun fail() {
+    fun fail(location: String? = null) {
         this.status = AlarmStatus.FAILED
+        this.location = location
+        this.updatedAt = LocalDateTime.now()
+    }
+
+    fun dead(location: String? = null) {
+        this.status = AlarmStatus.DEAD
+        this.location = location
         this.updatedAt = LocalDateTime.now()
     }
 

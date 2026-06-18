@@ -109,9 +109,10 @@ class KafkaAlarmJobConsumerTest {
         // When
         consumer.consumeAlarmJob(payload, 1).join()
 
-        // Then
-        // H2 DB 상태 업데이트 시 SENT(Done) 상태로 업데이트되는지 검증
-        verify(alarmRepositoryPort).updateStatusesInBatch(listOf(12345L), AlarmStatus.SENT)
+        // [Then] alarmRepositoryPort.updateStatusAndLocationInBatch가 SENT 상태로 호출되었는지 검증
+        // 1. DCL 2차 검증을 위한 findById 호출
+        verify(alarmRepositoryPort).findById(12345L)
+        verify(alarmRepositoryPort).updateStatusAndLocationInBatch(listOf(12345L), AlarmStatus.SENT)
     }
 
     /**
@@ -168,9 +169,10 @@ class KafkaAlarmJobConsumerTest {
         consumer.consumeAlarmJob(payload, 4).join()
 
         // Then
-        // 1. H2 DB에 DEAD 상태로 일괄 업데이트되는지 검증
-        verify(alarmRepositoryPort).updateStatusesInBatch(listOf(12345L), AlarmStatus.DEAD)
-        // 2. 실행 로그가 save로 저장되는지 검증
+        verify(alarmRepositoryPort).findById(12345L)
+        verify(alarmRepositoryPort).updateStatusAndLocationInBatch(listOf(12345L), AlarmStatus.DEAD)
+
+        // 3. alarmExecutionLogRepositoryPort.save 가 DEAD 상태로 저장되었는지 검증
         verify(alarmExecutionLogRepositoryPort).save(anyObject(AlarmExecutionLog::class.java))
     }
 

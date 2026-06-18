@@ -71,16 +71,25 @@ class MockApiNotificationAdapter(
                     receiver = item.receiverId,
                     message = item.payload ?: ""
                 )
+                
+                logger.info("MockApi 요청 시작 - requestId: {}, receiver: {}, channel: {}", request.requestId, request.receiver, request.channelType)
+                
                 webClient.post()
                     .uri("/mock/send")
                     .contentType(MediaType.APPLICATION_JSON)
                     .bodyValue(request)
                     .retrieve()
                     .bodyToMono(Void::class.java)
+                    .doOnSuccess {
+                        logger.info("MockApi 요청 성공 - requestId: {}", request.requestId)
+                    }
                     .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))
                         .filter { throwable ->
                             throwable is WebClientResponseException &&
                             (throwable.statusCode.value() == 429 || throwable.statusCode.is5xxServerError)
+                        }
+                        .doBeforeRetry { retrySignal ->
+                            logger.info("MockApi 재시도 발생 - requestId: {}, 시도 횟수: {}, 원인: {}", request.requestId, retrySignal.totalRetries() + 1, retrySignal.failure().message)
                         }
                     )
                     .onErrorMap { throwable ->
@@ -90,6 +99,9 @@ class MockApiNotificationAdapter(
                             throwable
                         }
                     }
+                    .doOnError { throwable ->
+                        logger.error("MockApi 최종 실패 - requestId: {}, 원인: {}", request.requestId, throwable.message)
+                    }
             }
             .then()
     }
@@ -98,7 +110,7 @@ class MockApiNotificationAdapter(
      * 서킷 브레이커가 OPEN 상태일 때 호출 제한(CallNotPermittedException)을 가로채서 커스텀 예외로 변환하는 Fallback 메서드
      */
     fun sendNotificationFallback(items: List<AlarmBatchItem>, ex: CallNotPermittedException): Mono<Void> {
-        logger.warn("Circuit breaker is OPEN. Blocking external API call for {} items.", items.size)
+        logger.info("Circuit breaker is OPEN. Blocking external API call for {} items.", items.size)
         return Mono.error(CircuitBreakerOpenException("Circuit breaker is OPEN. Calls to external notification API are blocked."))
     }
 }

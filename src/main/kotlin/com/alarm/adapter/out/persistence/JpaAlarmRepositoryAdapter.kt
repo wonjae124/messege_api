@@ -48,14 +48,15 @@ class JpaAlarmRepositoryAdapter(
         springDataAlarmRepository.delete(entity)
     }
 
-    override fun updateStatusesInBatch(ids: List<Long>, status: AlarmStatus) {
+    override fun updateStatusAndLocationInBatch(ids: List<Long>, status: AlarmStatus, location: String?) {
         if (ids.isEmpty()) return
-        val sql = "UPDATE alarms SET status = ?, updated_at = ? WHERE id = ?"
+        val sql = "UPDATE alarms SET status = ?, location = ?, updated_at = ? WHERE id = ?"
         jdbcTemplate.batchUpdate(sql, object : BatchPreparedStatementSetter {
             override fun setValues(ps: PreparedStatement, i: Int) {
                 ps.setString(1, status.name)
-                ps.setTimestamp(2, Timestamp.valueOf(LocalDateTime.now()))
-                ps.setLong(3, ids[i])
+                ps.setString(2, location)
+                ps.setTimestamp(3, Timestamp.valueOf(LocalDateTime.now()))
+                ps.setLong(4, ids[i])
             }
             override fun getBatchSize(): Int = ids.size
         })

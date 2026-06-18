@@ -16,5 +16,5 @@ interface AlarmRepositoryPort {
     fun findById(id: Long): Alarm?
     fun findAll(pageable: Pageable): Page<Alarm>
     fun delete(alarm: Alarm)
-    fun updateStatusesInBatch(ids: List<Long>, status: AlarmStatus)
+    fun updateStatusAndLocationInBatch(ids: List<Long>, status: AlarmStatus, location: String? = null)
 }

@@ -168,7 +168,7 @@ class KafkaAlarmJobConsumer(
             .then(Mono.defer {
                 val elapsedTime = System.currentTimeMillis() - startTime
                 redisTemplate.opsForValue().set(procKey, "DONE", Duration.ofMinutes(3))
-                alarmRepositoryPort.updateStatusesInBatch(listOf(alarmIdLong), AlarmStatus.SENT)
+                alarmRepositoryPort.updateStatusAndLocationInBatch(listOf(alarmIdLong), AlarmStatus.SENT)
 
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
                     alarmId = alarmIdLong.toString(),
@@ -208,8 +208,10 @@ class KafkaAlarmJobConsumer(
                     Triple(AlarmStatus.RETRY_WAIT, "RETRY_WAIT", "RETRY_WAIT")
                 }
 
+                val failureLocation = if (targetStatus == AlarmStatus.FAILED || targetStatus == AlarmStatus.DEAD) "CONSUMER" else null
+
                 // boundedElastic에서 DB 작업 수행
-                alarmRepositoryPort.updateStatusesInBatch(listOf(alarmIdLong), targetStatus)
+                alarmRepositoryPort.updateStatusAndLocationInBatch(listOf(alarmIdLong), targetStatus, failureLocation)
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
                     alarmId = alarmIdLong.toString(),
                     status = logStatus,

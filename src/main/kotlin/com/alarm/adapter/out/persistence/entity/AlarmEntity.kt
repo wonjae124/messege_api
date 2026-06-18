@@ -37,6 +37,9 @@ class AlarmEntity(
     @Column(columnDefinition = "TEXT")
     val payload: String?,
 
+    @Column
+    val location: String?,
+
     @Column(name = "created_at", nullable = false, updatable = false)
     val createdAt: LocalDateTime,
 
@@ -53,6 +56,7 @@ class AlarmEntity(
                 name = alarm.name,
                 status = alarm.status,
                 payload = alarm.payload,
+                location = alarm.location,
                 createdAt = alarm.createdAt,
                 updatedAt = alarm.updatedAt
             )
@@ -68,6 +72,7 @@ class AlarmEntity(
             name = name,
             status = status,
             payload = payload,
+            location = location,
             createdAt = createdAt,
             updatedAt = updatedAt
         )

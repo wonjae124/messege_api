@@ -46,24 +46,24 @@ import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 /**
- * [대상] KafkaAlarmJobProducer + KafkaAlarmJobConsumer
- * [범주] Kafka 실패 케이스 통합 Test — SpringBootTest + EmbeddedKafka + Mockito 혼합
+ * [?�?? KafkaAlarmJobProducer + KafkaAlarmJobConsumer
+ * [범주] Kafka ?�패 케?�스 ?�합 Test ??SpringBootTest + EmbeddedKafka + Mockito ?�합
  *
- * 발송 API 실패
- *   ① sendNotification 예외 → H2 DB FAILED 저장 + 에러 로그 기록
- *   ② sendNotification 예외 → alarm-jobs-retry 토픽으로 재발행
+ * 발송 API ?�패
+ *   ??sendNotification ?�외 ??H2 DB FAILED ?�??+ ?�러 로그 기록
+ *   ??sendNotification ?�외 ??alarm-jobs-retry ?�픽?�로 ?�발??
  *
- * 멱등성 (중복 메시지)
- *   ③ 동일 uuid 2건 → proc: 키로 중복 감지, sendNotification 1회만 호출
+ * 멱등??(중복 메시지)
+ *   ???�일 uuid 2�???proc: ?�로 중복 감�?, sendNotification 1?�만 ?�출
  *
- * 잘못된 메시지 형식
- *   ④ 정상 JSON 1건 + 깨진 JSON 1건 → 깨진 건 Skip, 정상 건만 처리
+ * ?�못??메시지 ?�식
+ *   ???�상 JSON 1�?+ 깨진 JSON 1�???깨진 �?Skip, ?�상 건만 처리
  *
- * 파티션 발행 실패
- *   ⑤ 존재하지 않는 파티션(99번) 발행 시도 → 예외 발생
+ * ?�티??발행 ?�패
+ *   ??존재?��? ?�는 ?�티??99�? 발행 ?�도 ???�외 발생
  *
  * ack 보장
- *   ⑥ 모든 메시지가 중복이어도 → ack() 정상 호출 (오프셋 누락 방지)
+ *   ??모든 메시지가 중복?�어????ack() ?�상 ?�출 (?�프???�락 방�?)
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -104,29 +104,29 @@ class KafkaProducerConsumerFailureTest {
         Mockito.`when`(redisTemplate.opsForValue()).thenReturn(valueOps)
         Mockito.`when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         Mockito.`when`(redisRateLimiter.tryAcquire(anyInt())).thenReturn(true)
-        // 기본은 성공 응답; 개별 테스트에서 재정의 가능
+        // 기본?� ?�공 ?�답; 개별 ?�스?�에???�정??가??
         Mockito.`when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.empty())
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // [실패 시나리오 1] 발송 API 예외 발생 → FAILED 상태 저장 + 에러 로그
-    // ─────────────────────────────────────────────────────────────────
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+    // [?�패 ?�나리오 1] 발송 API ?�외 발생 ??FAILED ?�태 ?�??+ ?�러 로그
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
 
     /**
-     * [시나리오 1] sendNotification이 RuntimeException을 던질 때,
-     *              H2 DB에 FAILED 상태로 저장되고 에러 이력이 기록되는지 검증합니다.
-     * [Given] 알람 1건 생성 + sendNotification이 예외를 반환하도록 Mock 설정
-     * [When] POST /notifications 호출 → Kafka 발행 → Consumer 소비 → 발송 실패
-     * [Then] H2 DB에서 해당 알람 상태가 FAILED인지 폴링 검증
+     * [?�나리오 1] sendNotification??RuntimeException???�질 ??
+     *              H2 DB??FAILED ?�태�??�?�되�??�러 ?�력??기록?�는지 검증합?�다.
+     * [Given] ?�람 1�??�성 + sendNotification???�외�?반환?�도�?Mock ?�정
+     * [When] POST /notifications ?�출 ??Kafka 발행 ??Consumer ?�비 ??발송 ?�패
+     * [Then] H2 DB?�서 ?�당 ?�람 ?�태가 FAILED?��? ?�링 검�?
      */
     @Test
     @Suppress("UNCHECKED_CAST")
     fun `consumer should save RETRY_WAIT status when sendNotification throws exception`() {
-        // Given: sendNotification이 예외를 발생시키도록 설정
+        // Given: sendNotification???�외�?발생?�키?�록 ?�정
         Mockito.`when`(notificationPort.sendNotification(anyList()))
-            .thenReturn(Mono.error(RuntimeException("외부 API 타임아웃")))
+            .thenReturn(Mono.error(RuntimeException("?��? API ?�?�아??)))
 
-        val request = AlarmCreateRequest(name = "실패알람", payload = "{}")
+        val request = AlarmCreateRequest(name = "?�패?�람", payload = "{}")
         val result = mockMvc.perform(
             post("/notifications")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -137,8 +137,8 @@ class KafkaProducerConsumerFailureTest {
 
         val alarmId = objectMapper.readTree(result.response.contentAsString).get("id").asText()
 
-        // When: Consumer 비동기 처리 대기 (최대 5초)
-        // Then: H2 DB에서 알람 상태가 RETRY_WAIT로 갱신되었는지 폴링 검증
+        // When: Consumer 비동�?처리 ?��?(최�? 5�?
+        // Then: H2 DB?�서 ?�람 ?�태가 RETRY_WAIT�?갱신?�었?��? ?�링 검�?
         var isRetryWait = false
         for (i in 1..50) {
             val alarm = alarmRepositoryPort.findById(alarmId.toLong())
@@ -148,23 +148,23 @@ class KafkaProducerConsumerFailureTest {
             }
             Thread.sleep(100)
         }
-        assertTrue(isRetryWait, "sendNotification 예외 발생 시 알람 상태가 5초 내 RETRY_WAIT로 갱신되어야 합니다.")
+        assertTrue(isRetryWait, "sendNotification ?�외 발생 ???�람 ?�태가 5�???RETRY_WAIT�?갱신?�어???�니??")
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // [실패 시나리오 2] 발송 실패 시 Retry Topic 재발행 (Consumer 단위 테스트)
-    // ─────────────────────────────────────────────────────────────────
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+    // [?�패 ?�나리오 2] 발송 ?�패 ??Retry Topic ?�발??(Consumer ?�위 ?�스??
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
 
     /**
-     * [시나리오 2] sendNotification 예외 발생 시 실패한 알람 ID가 alarm-jobs-retry 토픽으로 재발행되는지 검증합니다.
-     * [Given] 소비자 단위 테스트 환경 구성 + sendNotification 예외 반환 설정
-     * [When] consumeAlarmJobs() 직접 호출
-     * [Then] kafkaTemplate.send("alarm-jobs-retry", ...)가 호출되었는지 검증
+     * [?�나리오 2] sendNotification ?�외 발생 ???�패???�람 ID가 alarm-jobs-retry ?�픽?�로 ?�발?�되?��? 검증합?�다.
+     * [Given] ?�비???�위 ?�스???�경 구성 + sendNotification ?�외 반환 ?�정
+     * [When] consumeAlarmJobs() 직접 ?�출
+     * [Then] kafkaTemplate.send("alarm-jobs-retry", ...)가 ?�출?�었?��? 검�?
      */
     @Test
     @Suppress("UNCHECKED_CAST")
     fun `consumer should update status to DEAD when max retries are exceeded`() {
-        // Given: 소비자 직접 구성
+        // Given: ?�비??직접 구성
         val mockAlarmRepo = mock(AlarmRepositoryPort::class.java)
         val mockLogRepo = mock(AlarmExecutionLogRepositoryPort::class.java)
         val mockNotification = mock(NotificationPort::class.java)
@@ -175,7 +175,7 @@ class KafkaProducerConsumerFailureTest {
         `when`(mockRedis.opsForValue()).thenReturn(mockValueOps)
         `when`(mockValueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         `when`(mockRateLimiter.tryAcquire(anyInt())).thenReturn(true)
-        // sendNotification이 예외를 발생시키도록 설정
+        // sendNotification???�외�?발생?�키?�록 ?�정
         `when`(mockNotification.sendNotification(anyList()))
             .thenReturn(Mono.error(RuntimeException("Connection refused")))
 
@@ -197,23 +197,23 @@ class KafkaProducerConsumerFailureTest {
 
         val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-retry"}"""
 
-        // When: 4번째 실패 시도 (maxAttempts = 4)를 직접 호출하여 최종 실패 상황을 재현 (DEAD이므로 예외 없이 완료됨)
+        // When: 4번째 ?�패 ?�도 (maxAttempts = 4)�?직접 ?�출?�여 최종 ?�패 ?�황???�현 (DEAD?��?�??�외 ?�이 ?�료??
         consumer.consumeAlarmJob(payload, 4).join()
 
-        // Then: DEAD 상태로 DB 업데이트가 검증되어야 함 (최대 시도 초과)
-        verify(mockAlarmRepo).updateStatusesInBatch(listOf(12345L), AlarmStatus.DEAD)
+        // Then: DEAD ?�태�?DB ?�데?�트가 검증되?�야 ??(최�? ?�도 초과)
+        verify(mockAlarmRepo).updateStatusAndLocationInBatch(listOf(12345L), AlarmStatus.DEAD)
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // [실패 시나리오 3] 중복 Kafka 메시지 → proc: 키 멱등 처리 (Consumer 단위 테스트)
-    // ─────────────────────────────────────────────────────────────────
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+    // [?�패 ?�나리오 3] 중복 Kafka 메시지 ??proc: ??멱등 처리 (Consumer ?�위 ?�스??
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
 
     /**
-     * [시나리오 3] 동일 uuid(멱등키)를 가진 메시지 2건이 Kafka에 들어올 때
-     *              proc: Redis 키로 중복을 감지하여 sendNotification이 정확히 1회만 호출되는지 검증합니다.
-     * [Given] 동일 uuid를 가진 payload 2건 준비 + 첫 번째만 setIfAbsent=true, 두 번째는 false 설정
-     * [When] consumeAlarmJobs()에 2건을 한꺼번에 전달
-     * [Then] sendNotification은 정확히 1회만 호출됨 검증 (중복 건 Skip)
+     * [?�나리오 3] ?�일 uuid(멱등??�?가�?메시지 2건이 Kafka???�어????
+     *              proc: Redis ?�로 중복??감�??�여 sendNotification???�확??1?�만 ?�출?�는지 검증합?�다.
+     * [Given] ?�일 uuid�?가�?payload 2�?준�?+ �?번째�?setIfAbsent=true, ??번째??false ?�정
+     * [When] consumeAlarmJobs()??2건을 ?�꺼번에 ?�달
+     * [Then] sendNotification?� ?�확??1?�만 ?�출??검�?(중복 �?Skip)
      */
     @Test
     @Suppress("UNCHECKED_CAST")
@@ -231,11 +231,11 @@ class KafkaProducerConsumerFailureTest {
         `when`(mockRateLimiter.tryAcquire(anyInt())).thenReturn(true)
         `when`(mockNotification.sendNotification(anyList())).thenReturn(Mono.empty())
 
-        // 첫 번째 메시지: proc 키 선점 성공 (true)
-        // 두 번째 메시지: 이미 선점되어 있음 (false) → 중복으로 Skip
+        // �?번째 메시지: proc ???�점 ?�공 (true)
+        // ??번째 메시지: ?��? ?�점?�어 ?�음 (false) ??중복?�로 Skip
         `when`(mockValueOps.setIfAbsent(org.mockito.ArgumentMatchers.eq(procKey), anyString(), any(Duration::class.java)))
-            .thenReturn(true)   // 첫 번째 시도
-            .thenReturn(false)  // 두 번째 시도
+            .thenReturn(true)   // �?번째 ?�도
+            .thenReturn(false)  // ??번째 ?�도
         `when`(mockValueOps.get(org.mockito.ArgumentMatchers.eq(procKey))).thenReturn("PROCESSING")
 
         val testAlarm = Alarm.create(
@@ -254,35 +254,35 @@ class KafkaProducerConsumerFailureTest {
             mockRedis, mockRateLimiter, testMapper
         )
 
-        // 동일 uuid를 가진 메시지 2건 (alarmId만 다름)
+        // ?�일 uuid�?가�?메시지 2�?(alarmId�??�름)
         val payload1 = """{"alarmId":"10001","senderId":"sender-A","receiverId":"receiver-A","uuid":"uuid-SAME"}"""
         val payload2 = """{"alarmId":"10002","senderId":"sender-A","receiverId":"receiver-A","uuid":"uuid-SAME"}"""
 
         // When
         consumer.consumeAlarmJob(payload1, 1).join()
         
-        // 두 번째 중복 작업은 ConcurrentProcessingException을 던져서 Kafka 재시도를 타야 함
+        // ??번째 중복 ?�업?� ConcurrentProcessingException???�져??Kafka ?�시?��? ?�????
         org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
             consumer.consumeAlarmJob(payload2, 1).join()
         }
 
-        // Then: 중복 건 제외 → sendNotification은 정확히 1회만 호출
+        // Then: 중복 �??�외 ??sendNotification?� ?�확??1?�만 ?�출
         verify(mockNotification, times(1)).sendNotification(anyList())
-        // 첫 번째만 SENT, 두 번째는 처리 안됨
-        verify(mockAlarmRepo).updateStatusesInBatch(listOf(10001L), AlarmStatus.SENT)
+        // �?번째�?SENT, ??번째??처리 ?�됨
+        verify(mockAlarmRepo).updateStatusAndLocationInBatch(listOf(10001L), AlarmStatus.SENT)
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // [실패 시나리오 4] 잘못된 JSON 포맷 메시지 혼입 시 정상 건만 처리
-    // ─────────────────────────────────────────────────────────────────
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+    // [?�패 ?�나리오 4] ?�못??JSON ?�맷 메시지 ?�입 ???�상 건만 처리
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
 
     /**
-     * [시나리오 4] 배치 메시지 중 JSON 파싱이 불가능한 잘못된 포맷의 메시지가 1건 포함될 때
-     *              해당 건은 Skip(예외 처리)하고 나머지 정상 건은 정상 처리되는지 검증합니다.
-     * [Given] 정상 JSON 1건 + 잘못된 포맷 1건을 함께 준비
-     * [When] consumeAlarmJobs()에 2건을 전달
-     * [Then] sendNotification은 정상 건만 포함하여 1회 호출됨 검증
-     *        + 잘못된 건은 예외 로그만 남기고 전체 배치 실패로 이어지지 않음
+     * [?�나리오 4] 배치 메시지 �?JSON ?�싱??불�??�한 ?�못???�맷??메시지가 1�??�함????
+     *              ?�당 건�? Skip(?�외 처리)?�고 ?�머지 ?�상 건�? ?�상 처리?�는지 검증합?�다.
+     * [Given] ?�상 JSON 1�?+ ?�못???�맷 1건을 ?�께 준�?
+     * [When] consumeAlarmJobs()??2건을 ?�달
+     * [Then] sendNotification?� ?�상 건만 ?�함?�여 1???�출??검�?
+     *        + ?�못??건�? ?�외 로그�??�기�??�체 배치 ?�패�??�어지지 ?�음
      */
     @Test
     @Suppress("UNCHECKED_CAST")
@@ -316,58 +316,58 @@ class KafkaProducerConsumerFailureTest {
             mockRedis, mockRateLimiter, testMapper
         )
 
-        // 정상 JSON 1건 + 잘못된 포맷 1건
+        // ?�상 JSON 1�?+ ?�못???�맷 1�?
         val validPayload = """{"alarmId":"10003","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-valid"}"""
         val malformedPayload = """NOT_A_JSON_AT_ALL"""
 
         // When
         consumer.consumeAlarmJob(validPayload, 1).join()
         
-        // 파싱 불가능한 JSON 수신 시 예외 발생 검증
+        // ?�싱 불�??�한 JSON ?�신 ???�외 발생 검�?
         org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
             consumer.consumeAlarmJob(malformedPayload, 1).join()
         }
 
-        // Then: 정상 건만 발송되어야 하므로 sendNotification 1회 호출
+        // Then: ?�상 건만 발송?�어???��?�?sendNotification 1???�출
         verify(mockNotification, times(1)).sendNotification(anyList())
-        // 정상 건의 SENT 상태 업데이트 검증
-        verify(mockAlarmRepo).updateStatusesInBatch(listOf(10003L), AlarmStatus.SENT)
+        // ?�상 건의 SENT ?�태 ?�데?�트 검�?
+        verify(mockAlarmRepo).updateStatusAndLocationInBatch(listOf(10003L), AlarmStatus.SENT)
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // [실패 시나리오 5] 존재하지 않는 파티션 번호로 발행 시 예외 발생 검증
-    // ─────────────────────────────────────────────────────────────────
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+    // [?�패 ?�나리오 5] 존재?��? ?�는 ?�티??번호�?발행 ???�외 발생 검�?
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
 
     /**
-     * [시나리오 5] 존재하지 않는 파티션(99번)에 강제 발행 시도 시 예외가 발생하는지 검증합니다.
-     * [Given] EmbeddedKafka는 파티션 3개(0, 1, 2)만 존재
-     * [When] 파티션 99번으로 ProducerRecord를 직접 발행 시도
-     * [Then] TimeoutException 또는 ExecutionException 등 전송 실패 예외 발생 검증
+     * [?�나리오 5] 존재?��? ?�는 ?�티??99�???강제 발행 ?�도 ???�외가 발생?�는지 검증합?�다.
+     * [Given] EmbeddedKafka???�티??3�?0, 1, 2)�?존재
+     * [When] ?�티??99번으�?ProducerRecord�?직접 발행 ?�도
+     * [Then] TimeoutException ?�는 ExecutionException ???�송 ?�패 ?�외 발생 검�?
      */
     @Test
     fun `producer should fail when sending to non-existent partition`() {
-        // Given: EmbeddedKafka는 파티션 0, 1, 2만 존재 (총 3개)
+        // Given: EmbeddedKafka???�티??0, 1, 2�?존재 (�?3�?
         val invalidPartition = 99
         val payload = """{"alarmId":"alarm-invalid","senderId":"sender","receiverId":"receiver","uuid":"uuid-invalid"}"""
 
-        // When & Then: 존재하지 않는 파티션 99번으로 발행 시 예외 발생
+        // When & Then: 존재?��? ?�는 ?�티??99번으�?발행 ???�외 발생
         val exception = org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
             kafkaTemplate.send(ProducerRecord("alarm-jobs", invalidPartition, "key", payload))
                 .get(3, TimeUnit.SECONDS)
         }
-        assertNotNull(exception, "존재하지 않는 파티션 번호로 발행 시 예외가 발생해야 합니다.")
+        assertNotNull(exception, "존재?��? ?�는 ?�티??번호�?발행 ???�외가 발생?�야 ?�니??")
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // [실패 시나리오 6] 처리 가능한 메시지 없을 때도 ack 정상 호출
-    // ─────────────────────────────────────────────────────────────────
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+    // [?�패 ?�나리오 6] 처리 가?�한 메시지 ?�을 ?�도 ack ?�상 ?�출
+    // ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
 
     /**
-     * [시나리오 6] 배치 내 모든 메시지가 중복(proc: 키로 이미 처리됨)이어서
-     *              실제로 처리할 메시지가 없는 경우에도 Kafka ack를 정상 호출하는지 검증합니다.
-     * [Given] 모든 메시지의 setIfAbsent가 false를 반환 + get()이 "PROCESSING" 반환 (= 이미 처리 중)
-     * [When] consumeAlarmJobs()에 메시지 전달
-     * [Then] sendNotification은 절대 호출되지 않음 + ack()는 정상 호출됨
+     * [?�나리오 6] 배치 ??모든 메시지가 중복(proc: ?�로 ?��? 처리???�어??
+     *              ?�제�?처리??메시지가 ?�는 경우?�도 Kafka ack�??�상 ?�출?�는지 검증합?�다.
+     * [Given] 모든 메시지??setIfAbsent가 false�?반환 + get()??"PROCESSING" 반환 (= ?��? 처리 �?
+     * [When] consumeAlarmJobs()??메시지 ?�달
+     * [Then] sendNotification?� ?��? ?�출?��? ?�음 + ack()???�상 ?�출??
      */
     @Test
     @Suppress("UNCHECKED_CAST")
@@ -381,9 +381,9 @@ class KafkaProducerConsumerFailureTest {
         val mockValueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
 
         `when`(mockRedis.opsForValue()).thenReturn(mockValueOps)
-        // 모든 메시지가 이미 처리 중 상태 (중복)
+        // 모든 메시지가 ?��? 처리 �??�태 (중복)
         `when`(mockValueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
-        `when`(mockValueOps.get(anyString())).thenReturn("PROCESSING") // 이미 처리 중 → Skip
+        `when`(mockValueOps.get(anyString())).thenReturn("PROCESSING") // ?��? 처리 �???Skip
 
         val testMapper = ObjectMapper().registerKotlinModule()
         val consumer = KafkaAlarmJobConsumer(
@@ -402,7 +402,7 @@ class KafkaProducerConsumerFailureTest {
             consumer.consumeAlarmJob(payload2, 1).join()
         }
 
-        // Then: sendNotification은 한 번도 호출되지 않아야 함
+        // Then: sendNotification?� ??번도 ?�출?��? ?�아????
         verify(mockNotification, never()).sendNotification(anyList())
     }
 }

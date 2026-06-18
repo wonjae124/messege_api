@@ -82,6 +82,7 @@ class AlarmOutboxEvent private constructor(
         // 지수 백오프: 1회 실패시 5초, 2회시 10초, 3회시 20초 대기
         val backoffSeconds = 5L * (1L shl (this.retryCount - 1)) // 5 * 2^(retryCount-1)
         this.nextRetryAt = LocalDateTime.now().plusSeconds(backoffSeconds)
+        this.status = OutboxStatus.PENDING
         return false
     }
 }

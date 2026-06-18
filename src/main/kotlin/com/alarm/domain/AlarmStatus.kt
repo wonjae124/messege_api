@@ -14,4 +14,3 @@ enum class AlarmStatus {
     FAILED,
     DEAD
 }
-
