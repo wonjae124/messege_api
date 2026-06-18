@@ -14,7 +14,6 @@ import org.springframework.data.domain.Pageable
 interface AlarmRepositoryPort {
     fun save(alarm: Alarm): Alarm
     fun findById(id: Long): Alarm?
-    fun findAllByIds(ids: List<Long>): List<Alarm>
     fun findAll(pageable: Pageable): Page<Alarm>
     fun delete(alarm: Alarm)
     fun updateStatusesInBatch(ids: List<Long>, status: AlarmStatus)

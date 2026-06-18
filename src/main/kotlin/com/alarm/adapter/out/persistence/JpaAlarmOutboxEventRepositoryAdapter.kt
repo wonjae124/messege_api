@@ -4,7 +4,6 @@ import com.alarm.adapter.out.persistence.entity.AlarmOutboxEventEntity
 import com.alarm.adapter.out.persistence.repository.SpringDataAlarmOutboxEventRepository
 import com.alarm.application.port.out.AlarmOutboxEventRepositoryPort
 import com.alarm.domain.AlarmOutboxEvent
-import com.alarm.domain.OutboxStatus
 import org.springframework.stereotype.Component
 
 /**
@@ -21,11 +20,6 @@ class JpaAlarmOutboxEventRepositoryAdapter(
     override fun save(event: AlarmOutboxEvent): AlarmOutboxEvent {
         val entity = AlarmOutboxEventEntity.fromDomain(event)
         return springDataAlarmOutboxEventRepository.save(entity).toDomain()
-    }
-
-    override fun findAllByStatus(status: OutboxStatus): List<AlarmOutboxEvent> {
-        return springDataAlarmOutboxEventRepository.findAllByStatus(status)
-            .map { it.toDomain() }
     }
 
     override fun findPendingEventsForUpdate(now: java.time.LocalDateTime, limit: Int): List<AlarmOutboxEvent> {

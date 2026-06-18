@@ -590,7 +590,9 @@ Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플�
 1. **Kafka 컨테이너 실행**:
    프로젝트 루트 경로에서 아래 명령을 통해 백그라운드로 Kafka 브로커를 띄웁니다.
    ```bash
-   docker-compose up -d
+   기존 이미지로 실행 : docker-compose up -d
+   
+   새로운 이미지로 빌드 후 실행 : docker-compose up -d --build alarm-api
    ```
 2. **애플리케이션 실행**:
    ```bash

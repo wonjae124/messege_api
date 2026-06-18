@@ -25,8 +25,7 @@ class AlarmController(
     private val createAlarmUseCase: CreateAlarmUseCase,
     private val getAlarmQuery: GetAlarmQuery,
     private val updateAlarmUseCase: UpdateAlarmUseCase,
-    private val deleteAlarmUseCase: DeleteAlarmUseCase,
-    private val triggerAlarmUseCase: TriggerAlarmUseCase
+    private val deleteAlarmUseCase: DeleteAlarmUseCase
 ) {
 
     @PostMapping("/notifications")
@@ -101,10 +100,4 @@ class AlarmController(
         deleteAlarmUseCase.deleteAlarm(id)
     }
 
-    @PostMapping("/notifications/{id}/trigger")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    @Operation(summary = "알람 즉시 발생", description = "알람을 비동기 큐가 아닌 외부 API로 즉시 전송합니다.")
-    fun triggerAlarm(@PathVariable id: String) {
-        triggerAlarmUseCase.triggerAlarm(id)
-    }
 }

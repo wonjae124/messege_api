@@ -3,7 +3,6 @@ package com.alarm.adapter.`in`.web
 import com.alarm.adapter.out.notification.RedisRateLimiter
 import com.alarm.adapter.`in`.web.dto.AlarmCreateRequest
 import com.alarm.application.port.out.NotificationPort
-import com.alarm.application.port.`in`.TriggerAlarmUseCase
 import com.alarm.application.port.out.AlarmRepositoryPort
 import com.alarm.domain.AlarmStatus
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -32,7 +31,6 @@ import org.springframework.kafka.test.context.EmbeddedKafka
  * [범주] Web Adapter 통합 Test — MockMvc + H2 + EmbeddedKafka
  *
  * ① POST /notifications → HTTP 201, PENDING 상태 응답 + H2 DB 저장 확인
- * ② POST /notifications + triggerAlarm 호출 → DB 상태 SENT 전이 확인
  */
 
 @SpringBootTest
@@ -48,9 +46,6 @@ class AlarmControllerTest {
 
     @Autowired
     lateinit var alarmRepositoryPort: AlarmRepositoryPort
-
-    @Autowired
-    lateinit var triggerAlarmUseCase: TriggerAlarmUseCase
 
     @MockBean
     lateinit var notificationPort: NotificationPort
@@ -96,30 +91,5 @@ class AlarmControllerTest {
         assertEquals("Web Test Alarm", savedAlarm?.name)
     }
 
-    @Test
-    fun `should trigger alarm successfully`() {
-        val request = AlarmCreateRequest(
-            name = "Trigger Test Alarm",
-            payload = "{\"key\":\"val\"}"
-        )
-
-        val createResult = mockMvc.perform(
-            post("/notifications")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request))
-        )
-            .andExpect(status().isCreated)
-            .andReturn()
-
-        val responseBody = createResult.response.contentAsString
-        val alarmId = objectMapper.readTree(responseBody).get("id").asText()
-
-        // 알람 즉시 발생 유스케이스 직접 호출
-        triggerAlarmUseCase.triggerAlarm(alarmId)
-
-        // 알람 상태가 SENT로 변경되었는지 확인
-        val savedAlarm = alarmRepositoryPort.findById(alarmId.toLong())
-        assertNotNull(savedAlarm)
-        assertEquals(AlarmStatus.SENT, savedAlarm?.status)
-    }
 }
+

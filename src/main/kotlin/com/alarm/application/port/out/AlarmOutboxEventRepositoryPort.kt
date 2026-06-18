@@ -11,6 +11,5 @@ import com.alarm.domain.OutboxStatus
  */
 interface AlarmOutboxEventRepositoryPort {
     fun save(event: AlarmOutboxEvent): AlarmOutboxEvent
-    fun findAllByStatus(status: OutboxStatus): List<AlarmOutboxEvent>
     fun findPendingEventsForUpdate(now: java.time.LocalDateTime, limit: Int): List<AlarmOutboxEvent>
 }

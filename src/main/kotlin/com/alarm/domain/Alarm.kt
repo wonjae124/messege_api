@@ -82,18 +82,8 @@ class Alarm private constructor(
         this.updatedAt = LocalDateTime.now()
     }
 
-    fun retryWait() {
-        this.status = AlarmStatus.RETRY_WAIT
-        this.updatedAt = LocalDateTime.now()
-    }
-
     fun fail() {
         this.status = AlarmStatus.FAILED
-        this.updatedAt = LocalDateTime.now()
-    }
-
-    fun dead() {
-        this.status = AlarmStatus.DEAD
         this.updatedAt = LocalDateTime.now()
     }
 

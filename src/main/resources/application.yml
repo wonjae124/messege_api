@@ -54,11 +54,11 @@ spring:
 # 외부 연동 API (Mock API) 설정
 mock:
   api:
-    url: ${MOCK_API_URL:http://localhost:8080/mock-external} # 대상 외부 API 주소
+    url: ${MOCK_API_URL:http://localhost:8081} # 대상 외부 API 주소 (도커: MOCK_API_URL=http://sendmock:8081)
     timeout:
       connect-millis: 5000     # 커넥션 연결 타임아웃 (밀리초)
       response-seconds: 5      # 전체 HTTP 응답 대기 타임아웃 (초)
-      read-seconds: 4          # 읽기 타임아웃 (초) - 외부 지연 발생 시 빠른 실패 유도
+      read-seconds: 3          # 읽기 타임아웃 (초) - 외부 지연 발생 시 빠른 실패 유도
       write-seconds: 5         # 쓰기 타임아웃 (초)
 
 # 모니터링 및 Actuator 설정

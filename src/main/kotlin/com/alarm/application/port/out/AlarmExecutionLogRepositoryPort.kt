@@ -10,6 +10,4 @@ import com.alarm.domain.AlarmExecutionLog
  */
 interface AlarmExecutionLogRepositoryPort {
     fun save(log: AlarmExecutionLog): AlarmExecutionLog
-    fun saveAll(logs: List<AlarmExecutionLog>): List<AlarmExecutionLog>
-    fun findByAlarmId(alarmId: String): List<AlarmExecutionLog>
 }
