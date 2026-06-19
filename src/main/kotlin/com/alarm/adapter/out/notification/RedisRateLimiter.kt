@@ -3,6 +3,7 @@ package com.alarm.adapter.out.notification
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.script.DefaultRedisScript
 import org.springframework.stereotype.Component
+import org.springframework.beans.factory.annotation.Value
 import java.time.Instant
 
 /**
@@ -13,12 +14,12 @@ import java.time.Instant
  */
 @Component
 class RedisRateLimiter(
-    private val redisTemplate: StringRedisTemplate
+    private val redisTemplate: StringRedisTemplate,
+    @Value("\${alarm.rate-limiter.capacity:500}") private val capacity: Int,
+    @Value("\${alarm.rate-limiter.refill-rate:500}") private val refillRate: Int,
+    @Value("\${alarm.rate-limiter.refill-period-seconds:1}") private val refillPeriodSeconds: Long
 ) {
     private val key = "rate_limit:external_api"
-    private val capacity = 500
-    private val refillRate = 500
-    private val refillPeriodSeconds = 1L
 
     private val luaScript = """
         local key = KEYS[1]

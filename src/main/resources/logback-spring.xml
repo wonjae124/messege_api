@@ -2,9 +2,13 @@
 <configuration>
     <!-- 콘솔 출력 설정 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
+    </appender>
+
+    <!-- OpenTelemetry OTLP Appender (Loki 전송용) -->
+    <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+        <captureExperimentalAttributes>true</captureExperimentalAttributes>
+        <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
     </appender>
 
     <!-- 카프카 로그 파일 설정 (logs/kafka.log) -->
@@ -14,15 +18,12 @@
             <fileNamePattern>logs/kafka-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
     </appender>
 
     <!-- 애플리케이션 에러 로그 파일 설정 (logs/app.log) -->
     <appender name="APP_ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/app.log</file>
-        <!-- ERROR 레벨 이상의 로그만 기록하도록 필터링 -->
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
             <level>ERROR</level>
         </filter>
@@ -30,24 +31,38 @@
             <fileNamePattern>logs/app-%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>30</maxHistory>
         </rollingPolicy>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
     </appender>
 
-    <!-- 카프카 패키지 로그를 kafka.log로 분리 -->
+    <!-- 애플리케이션 전체 로그 파일 설정 (logs/app-info.log) -->
+    <appender name="APP_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/app-info.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>logs/app-info-%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder" />
+    </appender>
+
+    <!-- 카프카 패키지 로그 분리 -->
     <logger name="org.apache.kafka" level="INFO" additivity="false">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="OTEL"/>
         <appender-ref ref="KAFKA_FILE"/>
+        <appender-ref ref="APP_FILE"/>
     </logger>
     <logger name="org.springframework.kafka" level="INFO" additivity="false">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="OTEL"/>
         <appender-ref ref="KAFKA_FILE"/>
+        <appender-ref ref="APP_FILE"/>
     </logger>
 
-    <!-- 루트 로거: 전체 INFO 이상을 콘솔에 출력하고, 에러(ERROR) 발생 시 app.log에 기록 -->
+    <!-- 루트 로거: 콘솔, 전체 파일, 에러 파일, 그리고 OpenTelemetry Appender로 전송 -->
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="OTEL"/>
+        <appender-ref ref="APP_FILE"/>
         <appender-ref ref="APP_ERROR_FILE"/>
     </root>
 </configuration>

@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   zookeeper:
@@ -21,7 +20,9 @@ services:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -31,3 +32,62 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
+
+  h2-db:
+    image: oscarfonts/h2:latest
+    container_name: h2-db
+    ports:
+      - "1521:1521"
+      - "8082:81"
+    environment:
+      H2_OPTIONS: "-tcp -tcpAllowOthers -tcpPort 1521 -web -webAllowOthers -webPort 81 -ifNotExists"
+    volumes:
+      - h2-data:/opt/h2-data
+
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: otel-lgtm
+    ports:
+      - "3000:3000"   # Grafana UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "9090:9090"   # Prometheus
+    environment:
+      - ENABLE_LOGS_OTEL=true
+
+  alarm-api:
+    build: .
+    depends_on:
+      - kafka
+      - redis
+      - h2-db
+      - otel-lgtm
+      - sendmock
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 512M
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - DB_URL=jdbc:h2:tcp://h2-db:1521/alarmdb
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MOCK_API_URL=http://sendmock:8081
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4318
+      - OTEL_SERVICE_NAME=alarm-api
+      - OTEL_LOGS_EXPORTER=otlp
+
+  sendmock:
+    build:
+      context: ../sendmock
+      dockerfile: Dockerfile
+    container_name: sendmock
+    ports:
+      - "8089:8081"
+
+volumes:
+  h2-data:

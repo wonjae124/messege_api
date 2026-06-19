@@ -20,7 +20,6 @@ import org.springframework.data.redis.core.ValueOperations
 import org.springframework.http.MediaType
 import org.springframework.kafka.test.context.EmbeddedKafka
 import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import com.alarm.application.port.out.AlarmRepositoryPort
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
@@ -33,10 +32,11 @@ import java.time.Duration
  * [범주] Kafka 비동기 통합 Test — SpringBootTest + H2 + EmbeddedKafka
  *
  * ① POST /notifications → HTTP 201, PENDING 상태로 생성
- * ② Kafka Consumer가 메시지 소비 → sendNotification 호출 (5초 timeout 비동기 검증)
- * ③ 소비 완료 후 H2 DB 알람 상태 → SENT 전이 (100ms 간격 폴링, 최대 5초)
+ *    (AlarmService는 Outbox 테이블에만 저장 — 직접 Kafka 발행 없음)
+ * ② OutboxEventPublisher 스케줄러(1초 주기)가 Outbox를 폴링하여 Kafka에 발행
+ * ③ Kafka Consumer가 메시지 소비 → sendNotification 호출 (10초 timeout 비동기 검증)
+ * ④ 소비 완료 후 H2 DB 알람 상태 → SENT 전이 (100ms 간격 폴링, 최대 10초)
  */
-
 @SpringBootTest
 @AutoConfigureMockMvc
 @EmbeddedKafka(partitions = 3, topics = ["alarm-jobs"], bootstrapServersProperty = "spring.kafka.bootstrap-servers")
@@ -91,19 +91,21 @@ class AlarmKafkaIntegrationTest {
         val responseBody = createResult.response.contentAsString
         val alarmId = objectMapper.readTree(responseBody).get("id").asText()
 
-        verify(notificationPort, timeout(5000)).sendNotification(anyList())
+        // 2. Outbox 스케줄러(1초 주기)가 Kafka 발행 → Consumer가 소비 → sendNotification 호출
+        //    타임아웃을 10초로 충분히 주어 스케줄러 1회 실행 + Consumer 처리 시간 확보
+        verify(notificationPort, timeout(10_000)).sendNotification(anyList())
 
-        // 3. 비동기 발생 후 최종 상태가 SENT로 자동 변경되었는지 검증 (최대 5초 대기/폴링)
+        // 3. 비동기 발행 후 최종 상태가 SENT로 자동 변경되었는지 검증 (최대 10초 대기/폴링)
         var statusIsSent = false
-        for (i in 1..50) {
-            val savedAlarm = alarmRepositoryPort.findById(alarmId)
+        for (i in 1..100) {
+            val savedAlarm = alarmRepositoryPort.findById(alarmId.toLong())
             if (savedAlarm?.status == AlarmStatus.SENT) {
                 statusIsSent = true
                 break
             }
             Thread.sleep(100)
         }
-        
+
         assert(statusIsSent) { "알람 상태가 SENT로 변경되지 않았습니다." }
     }
 }

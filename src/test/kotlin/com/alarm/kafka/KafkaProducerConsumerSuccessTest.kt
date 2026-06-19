@@ -136,7 +136,18 @@ class KafkaProducerConsumerSuccessTest {
     fun `consumers should process messages from all 3 partitions in parallel`() {
         // Given: 파티션 0, 1, 2에 각 1개씩 메시지를 명시적으로 발행
         listOf(0, 1, 2).forEach { partition ->
-            val partitionPayload = """{"alarmId":"alarm-p$partition","senderId":"sender-$partition","receiverId":"receiver-$partition","uuid":"uuid-p$partition"}"""
+            val alarmId = 98000L + partition
+            val alarm = com.alarm.domain.Alarm.create(
+                id = alarmId,
+                senderId = "sender-$partition",
+                receiverId = "receiver-$partition",
+                channelType = "SMS",
+                name = "Parallel Test Alarm $partition",
+                payload = "{}"
+            )
+            alarmRepositoryPort.save(alarm)
+
+            val partitionPayload = """{"alarmId":"$alarmId","senderId":"sender-$partition","receiverId":"receiver-$partition","uuid":"uuid-p$partition"}"""
             kafkaTemplate.send(ProducerRecord("alarm-jobs", partition, "key-$partition", partitionPayload))
                 .get(5, TimeUnit.SECONDS)
         }
@@ -179,7 +190,7 @@ class KafkaProducerConsumerSuccessTest {
         alarmIds.forEach { alarmId ->
             var isSent = false
             for (i in 1..50) {
-                if (alarmRepositoryPort.findById(alarmId)?.status == AlarmStatus.SENT) {
+                if (alarmRepositoryPort.findById(alarmId.toLong())?.status == AlarmStatus.SENT) {
                     isSent = true
                     break
                 }

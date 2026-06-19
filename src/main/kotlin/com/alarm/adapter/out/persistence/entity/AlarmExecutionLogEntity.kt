@@ -7,7 +7,6 @@ import java.util.UUID
 
 /**
  * [파일명] AlarmExecutionLogEntity.kt
- * [수정일자] 2026-06-11
  * [기능] 알람 실행 이력 도메인 모델과 매핑되는 JPA RDB 테이블 엔티티 정의
  * [관점] Outbound persistence Entity: RDB(H2) 실행로그 테이블 스키마에 대응하며 도메인-DB 간 매핑 및 격리 기능을 수행합니다.
  */
@@ -15,6 +14,10 @@ import java.util.UUID
 @Table(name = "alarm_execution_logs")
 class AlarmExecutionLogEntity(
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val seq: Long? = null,
+
+    @Column(name = "id", nullable = false, unique = true)
     val id: UUID,
 
     @Column(name = "alarm_id", nullable = false)
@@ -27,8 +30,43 @@ class AlarmExecutionLogEntity(
     val status: String, // SUCCESS, FAILED
 
     @Column(name = "error_message", columnDefinition = "TEXT")
-    val errorMessage: String?
+    val errorMessage: String?,
+
+    @Column(name = "request_id", nullable = false)
+    val requestId: String,
+
+    @Column(name = "trace_id")
+    val traceId: String?,
+
+    @Column(name = "channel")
+    val channel: String?,
+
+    @Column(name = "receiver")
+    val receiver: String?,
+
+    @Column(name = "retry_count", nullable = false)
+    val retryCount: Int,
+
+    @Column(name = "external_api_status_code")
+    val externalApiStatusCode: Int?,
+
+    @Column(name = "elapsed_time_ms")
+    val elapsedTimeMs: Long?,
+
+    @Column(name = "result_status", nullable = false)
+    val resultStatus: String,
+
+    @Column(name = "last_retry_at")
+    val lastRetryAt: LocalDateTime?,
+
+    @Column(name = "max_retry_exceeded", nullable = false)
+    val maxRetryExceeded: Boolean = false
 ) {
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "alarm_id", referencedColumnName = "id", insertable = false, updatable = false,
+        foreignKey = ForeignKey(name = "fk_execution_log_alarm"))
+    val alarm: AlarmEntity? = null
+
     companion object {
         fun fromDomain(log: AlarmExecutionLog): AlarmExecutionLogEntity {
             return AlarmExecutionLogEntity(
@@ -36,7 +74,17 @@ class AlarmExecutionLogEntity(
                 alarmId = log.alarmId,
                 triggeredAt = log.triggeredAt,
                 status = log.status,
-                errorMessage = log.errorMessage
+                errorMessage = log.errorMessage,
+                requestId = log.requestId,
+                traceId = log.traceId,
+                channel = log.channel,
+                receiver = log.receiver,
+                retryCount = log.retryCount,
+                externalApiStatusCode = log.externalApiStatusCode,
+                elapsedTimeMs = log.elapsedTimeMs,
+                resultStatus = log.resultStatus,
+                lastRetryAt = log.lastRetryAt,
+                maxRetryExceeded = log.maxRetryExceeded
             )
         }
     }
@@ -47,7 +95,17 @@ class AlarmExecutionLogEntity(
             alarmId = alarmId,
             triggeredAt = triggeredAt,
             status = status,
-            errorMessage = errorMessage
+            errorMessage = errorMessage,
+            requestId = requestId,
+            traceId = traceId,
+            channel = channel,
+            receiver = receiver,
+            retryCount = retryCount,
+            externalApiStatusCode = externalApiStatusCode,
+            elapsedTimeMs = elapsedTimeMs,
+            resultStatus = resultStatus,
+            lastRetryAt = lastRetryAt,
+            maxRetryExceeded = maxRetryExceeded
         )
     }
 }

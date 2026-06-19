@@ -78,8 +78,13 @@ class AlarmExecutionLogTest {
         val status = "SUCCESS"
         val errorMessage = null
 
-        // When
-        val log = AlarmExecutionLog.reconstruct(id, alarmId, triggeredAt, status, errorMessage)
+        val log = AlarmExecutionLog.reconstruct(
+            id = id,
+            alarmId = alarmId,
+            triggeredAt = triggeredAt,
+            status = status,
+            errorMessage = errorMessage
+        )
 
         // Then
         assertEquals(id, log.id)
