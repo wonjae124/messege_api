@@ -9,7 +9,7 @@ import java.time.LocalDateTime
  * [파일명] AlarmEntity.kt
  * [수정일자] 2026-06-11
  * [기능] 알람 도메인 엔티티와 매핑되는 JPA RDB 테이블 엔티티 정의
- * [관점] Outbound persistence Entity: RDB(H2) 스키마 구조와 대응하며 도메인과 DB 간의 상호 매핑(reconstruct/fromDomain) 변환 로직을 가집니다.
+ * [관점] Outbound persistence Entity: RDB 스키마 구조와 대응하며 도메인과 DB 간의 상호 매핑(reconstruct/fromDomain) 변환 로직을 가집니다.
  */
 @Entity
 @Table(name = "alarms")

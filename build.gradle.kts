@@ -30,8 +30,7 @@ dependencies {
 	implementation("com.github.f4b6a3:uuid-creator:5.3.3")
 	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.16")
 	implementation("org.springframework.kafka:spring-kafka")
-	runtimeOnly("com.mysql:mysql-connector-j")
-	runtimeOnly("com.h2database:h2")
+	runtimeOnly("org.postgresql:postgresql")
 	implementation("org.springframework.boot:spring-boot-starter-webflux")
 
 	// Observability (Metrics, Tracing, Logs)
@@ -44,6 +43,7 @@ dependencies {
 	// Resilience4j (Circuit Breaker)
 	implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
 	implementation("io.github.resilience4j:resilience4j-micrometer:2.2.0")
+	implementation("io.github.resilience4j:resilience4j-reactor:2.2.0")
 
 	// UUIDv7 Generator
 	implementation("com.fasterxml.uuid:java-uuid-generator:5.1.0")

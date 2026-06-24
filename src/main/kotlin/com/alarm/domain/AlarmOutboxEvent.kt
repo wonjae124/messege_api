@@ -13,7 +13,7 @@ import java.util.UUID
  *        별도 스케줄러(OutboxEventPublisher)가 PENDING 상태 이벤트를 읽어 Kafka에 발행합니다.
  */
 class AlarmOutboxEvent private constructor(
-    val id: String,
+    val id: Long,
     val alarmId: String,
     val senderId: String,
     val receiverId: String,
@@ -28,7 +28,7 @@ class AlarmOutboxEvent private constructor(
         fun create(alarm: Alarm): AlarmOutboxEvent {
             val uuid = alarm.id.toString()
             return AlarmOutboxEvent(
-                id = UUID.randomUUID().toString(),
+                id = Math.abs(UUID.randomUUID().mostSignificantBits), // 애플리케이션에서 Long PK 직접 생성
                 alarmId = alarm.id.toString(),
                 senderId = alarm.senderId,
                 receiverId = alarm.receiverId,
@@ -42,7 +42,7 @@ class AlarmOutboxEvent private constructor(
         }
 
         fun reconstruct(
-            id: String,
+            id: Long,
             alarmId: String,
             senderId: String,
             receiverId: String,
