@@ -18,7 +18,7 @@ class KafkaAlarmJobProducer(
     private val kafkaTemplate: KafkaTemplate<String, String>
 ) : MessageQueuePort {
 
-    override fun publishAlarmJobFromOutbox(event: com.alarm.domain.AlarmOutboxEvent) {
+    override fun publishAlarmJobFromOutbox(event: com.alarm.domain.AlarmOutboxEvent): java.util.concurrent.CompletableFuture<out Any> {
         val partitionKey = "${event.senderId}:${event.receiverId}"
         val requestId = MDC.get("requestId")
         val spanContext = io.opentelemetry.api.trace.Span.current().spanContext
@@ -26,6 +26,6 @@ class KafkaAlarmJobProducer(
         
         val payload = """{"alarmId":"${event.alarmId}","senderId":"${event.senderId}","receiverId":"${event.receiverId}","uuid":"${event.uuid}","requestId":${if (requestId != null) "\"$requestId\"" else "null"},"traceId":${if (traceId != null) "\"$traceId\"" else "null"},"retryCount":0}"""
         
-        kafkaTemplate.send("alarm-jobs", partitionKey, payload).get(5, TimeUnit.SECONDS)
+        return kafkaTemplate.send("alarm-jobs", partitionKey, payload)
     }
 }

@@ -313,6 +313,27 @@ spring:
 - **포기해야 할 것 (Trade-offs)**: 
   - **전통적인 DB 자원 최적화 포기**: 일반적으로 권고되는 "소규모 풀 기반의 컨텍스트 스위칭 최소화" 아키텍처를 포기하고, 하드웨어(충분한 메모리를 갖춘 DB)의 자원을 최대로 소모하며 트래픽을 밀어내는 방식을 택함. 향후 스케일 아웃으로 WAS 대수가 늘어나면 DB가 1:1 정합성을 버티지 못하므로 PgBouncer 같은 커넥션 풀러(Connection Pooler) 도입이 강제됨.
 
+#### 💻 적용 코드 예시 (`application-perf.yml` 및 `docker-compose-perf.yml`)
+```yaml
+# application-perf.yml
+server:
+  tomcat:
+    threads:
+      max: 200    # 톰캣 워커 스레드 최대치
+
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 200   # 톰캣 스레드 수와 1:1 정합성
+```
+```yaml
+# docker-compose-perf.yml
+  postgres-perf:
+    image: postgres:15-alpine
+    command: postgres -c max_connections=300  # DB 수용량 넉넉히 확보
+```
+
+
 <br>
 
 ## 2.1. 타임아웃 4단계 세분화 전략 (HTTP)
@@ -580,3 +601,226 @@ private val connectionProvider = ConnectionProvider.builder("mock-api")
   - 즉시 발송 시스템은 "수천 건의 알림 Insert"와 "수백 건의 Outbox Select & Update"가 동시에 쏟아지는 극단적인 고동시성 환경입니다. 이 환경에서는 MySQL의 갭 락으로 인한 데드락 리스크를 짊어지는 것보다, PostgreSQL의 **안정적이고 예측 가능한 로우 레벨 락킹** 메커니즘을 취하는 것이 아키텍처적으로 가장 견고합니다.
   - 최신 백엔드 생태계(Graphile Worker, Oban 등)에서도 RDB 기반 큐잉의 표준은 PostgreSQL의 `SKIP LOCKED`를 전제로 만들어지고 있습니다.
 - **적용 결과**: `docker-compose.perf.yml`에서 H2 컨테이너를 PostgreSQL 15 버전으로 전면 교체하였으며, `application.yml`의 DB 연동 설정을 모두 갱신하여 완벽한 Outbox 동시성 분산 처리를 달성했습니다.
+
+#### 💻 적용 코드 예시 (`OutboxEventPublisher.kt` - SKIP LOCKED 적용)
+```kotlin
+@Query("""
+    SELECT o FROM OutBoxEvent o 
+    WHERE o.status = :status 
+    ORDER BY o.createdAt ASC 
+    LIMIT :limit 
+    FOR UPDATE SKIP LOCKED
+""")
+fun findPendingEventsWithLock(@Param("status") status: EventStatus, @Param("limit") limit: Int): List<OutBoxEvent>
+```
+
+
+---
+
+## 5. 알림 내역 조회 API 고도화 및 파티셔닝 전략 (추가 설계 사항)
+
+#### ❓ 요구사항 및 고민하게 된 배경
+- 알림 데이터는 휘발성이 강하면서도 무한정 누적되는 특징이 있습니다. "최근 7일만 보여줘도 데이터는 계속 누적"되며, 이로 인해 테이블 크기 증가, 인덱스 유지 비용 증가, 쿼리 성능 저하 등의 운영 문제가 발생합니다.
+- 이에 대한 해결책으로 데이터를 물리적/논리적으로 분산시키는 **파티셔닝(Partitioning)**과 **샤딩(Sharding)**이 있으며, 이번 과제에서는 구현 난이도와 운영 복잡성을 고려하여 실현 가능한 아키텍처 결정을 내려야 했습니다.
+
+---
+
+#### ⚖️ 파티셔닝 vs 샤딩 대안 비교
+
+**A안: 샤딩 (Sharding) 도입**
+- 데이터를 여러 DB 인스턴스로 나누어 저장.
+- **장점**: 단일 DB로 감당이 안 되는 트래픽과 데이터 규모를 처리할 수 있음.
+- **단점 (포기한 이유)**: 분산 트랜잭션, 라우팅 부담 등 운영 복잡도가 극도로 높아지며 과제 범위를 넘어섬.
+
+**B안: PostgreSQL Range Partitioning 적용 (선택)**
+- 한 DB 안에서 큰 테이블(`alarms`)을 날짜(`created_at`) 기준으로 일 단위(Daily) 파티셔닝하여 논리적으로 나누어 관리.
+- **장점**: 오래된 데이터 관리가 쉬워지며(단순 Partition Drop), 특정 기간 조회가 효율적이고 운영 관리가 편해짐.
+
+---
+
+#### ✅ 결정: B안 (일 단위 Range Partitioning 및 아카이빙)
+본 과제에서는 **"파티셔닝 전략 스크립트 작성 및 쿼리 고도화"** 방식으로 기능을 확장했습니다.
+
+**1. 수신자별, 상태별 조회 기능 고도화**
+- 발송 완료 내역, 실패/대기 상태 조회, 수신자 기준 최근 7일 조회 등 다양한 비즈니스 요구사항을 소화하기 위해 API에 `status`, `receiverId` 파라미터를 추가했습니다.
+- 이를 위해 `idx_alarm_receiver_history (receiver_id, created_at DESC)` 복합 인덱스를 추가하여, 어떠한 필터 조건이 들어오더라도 인덱스를 태워 O(log N) 수준의 빠른 커서 페이징이 가능하도록 설계했습니다.
+
+**2. 아카이빙 DB 관점의 파티셔닝 전략**
+실무에서 7일이 지난 오래된 데이터는 메인 DB에 두지 않습니다. 이를 위한 **운영 DDL 스크립트 가이드**를 수립했습니다.
+- **최근 데이터**: `alarm_y2026m06d24` 등 일 단위 파티션 테이블에 저장 (메인 DB)
+- **오래된 데이터**: 스케줄러를 통해 저비용 아카이빙 DB(예: S3 + Athena 또는 별도 로그 DB)로 이관 후, 메인 DB의 파티션은 `DROP PARTITION`하여 즉각적인 스토리지 회수 및 인덱스 트리 깊이 최소화.
+
+**파티셔닝 도입 시나리오 예시 (PostgreSQL):**
+```sql
+-- 1. 파티션 테이블 생성 (created_at 기준 Range 파티션)
+CREATE TABLE alarms_partitioned (
+    id BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    sender_id VARCHAR(255) NOT NULL,
+    receiver_id VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    payload TEXT,
+    PRIMARY KEY (id, created_at) -- 파티션 키가 PK에 포함되어야 함
+) PARTITION BY RANGE (created_at);
+
+-- 2. 일 단위 파티션 부착
+CREATE TABLE alarms_20260624 PARTITION OF alarms_partitioned
+    FOR VALUES FROM ('2026-06-24 00:00:00') TO ('2026-06-25 00:00:00');
+
+-- 3. 오래된 파티션 정리 (아카이빙 이관 후 실행)
+DROP TABLE alarms_20260617;
+```
+
+이렇게 파티셔닝을 적용하면, "7일이 지난 데이터"로 인해 발생하는 시스템 부하를 원천 차단하고 시스템 생명주기를 늘릴 수 있습니다.
+
+---
+
+## 6. MySQL 파티셔닝 전략 비교 및 아키텍처 의사결정
+
+알림 시스템의 파티셔닝을 설계하면서 MySQL이 제공하는 4가지 주요 파티셔닝 기법(Range, List, Hash, Key)을 비교하고, 시스템 특성에 맞는 최적의 전략을 도출했습니다.
+
+### 6.1. 파티셔닝 전략별 구체적 실무 활용 사례
+
+MySQL 파티셔닝의 4가지 방식과 핫 파티션을 방어하기 위한 복합(Composite) 파티셔닝이 실무에서 어떻게 쓰이는지 구체적인 사례로 정리했습니다.
+
+#### 1. Range 파티션 사례: 이커머스 주문 이력 및 로그
+- **비즈니스 상황**: 매달 수천만 건의 주문 데이터가 쌓여 검색 속도가 느려지고, 1년이 지난 데이터는 백업 후 삭제해야 하는 상황.
+- **구체적 구현**: `order_date` 컬럼을 기준으로 월별 Range 파티션을 생성합니다.
+- **실무 효과**:
+  - 사용자가 '최근 1달 주문 내역'을 조회할 때 최근 파티션만 스캔하므로 속도가 매우 빠릅니다.
+  - 오래된 데이터를 지울 때 무거운 `DELETE` 문 대신 `ALTER TABLE ... DROP PARTITION` 명령어로 1초 만에 디스크 공간을 확보합니다.
+
+#### 2. List 파티션 사례: 글로벌 서비스의 국가별 회원 관리
+- **비즈니스 상황**: 아시아 전역을 대상으로 하는 서비스에서 국가별 마케팅 대상을 추출하거나, 국가별 정산 데이터 조회가 빈번한 상황.
+- **구체적 구현**: `country_code` 컬럼을 기준으로 동남아(SQ), 동북아(EA), 기타(OTHER) 등으로 List 파티션을 나눕니다.
+- **실무 효과**: "베트남, 태국 유저 대상 쿠폰 발송"을 위해 쿼리를 날릴 때 동남아 파티션만 집중 조회하므로 전체 테이블을 풀 스캔하지 않습니다.
+
+#### 3. Hash 파티션 사례: 대규모 정기 구독형 유저 세션 관리
+- **비즈니스 상황**: 전 세계 수백만 명의 유저가 동시에 접속하여 실시간으로 세션 상태를 변경(쓰기/수정)하는 바람에 특정 디스크 블록에 락(Lock) 병목이 생기는 상황.
+- **구체적 구현**: 순차적인 날짜 대신 고르게 분포된 `user_id`(정수형 PK)를 기준으로 8개 또는 16개의 HASH 파티션을 생성합니다.
+- **실무 효과**: 
+  - 유저 ID를 8로 나눈 나머지 값에 따라 데이터가 8개의 파티션으로 완벽하게 분산됩니다.
+  - 특정 시간이나 날짜에 트래픽이 몰려도 쓰기 작업이 8개 파티션으로 쪼개져 들어가므로 **핫 파티션(Hot Partition)** 현상이 발생하지 않습니다.
+
+#### 4. Key 파티션 사례: SNS 서비스의 UUID 기반 피드 시스템
+- **비즈니스 상황**: Hash 파티션을 쓰고 싶지만 회원 식별자가 정수가 아닌 문자열(예: UUID 형태의 `feed_id`)이라 일반 해시 함수를 쓰기 어려운 상황.
+- **구체적 구현**: MD5나 정수 변환 알고리즘을 직접 짤 필요 없이, MySQL 내부 알고리즘을 쓰는 `PARTITION BY KEY(feed_id)`를 적용합니다.
+- **실무 효과**: 문자열 기반의 불규칙한 고유값(UUID)도 MySQL이 알아서 균등하게 파티션별로 쪼개어 저장해 줍니다.
+
+#### 5. Composite(서브) 파티션 사례: 핫 파티션을 극복한 실시간 금융 거래 이력
+- **비즈니스 상황**: 대용량 결제 테이블에 날짜(Range) 파티션을 적용했더니, 오늘 날짜 파티션에만 전국의 결제 트래픽이 몰려 데이터베이스가 마비(핫 파티션)되는 상황.
+- **구체적 구현**: 1차로 날짜(Range)를 나누고, 그 안에서 다시 `user_id`를 기준으로 4개의 해시(Hash) 서브 파티션을 둡니다.
+- **실무 효과**: 
+  - 오늘 결제되는 데이터가 오늘 날짜 파티션 안에서도 4개의 물리 공간으로 쪼개져 분산 저장됩니다. 
+  - 조회 이점: "오늘 특정 유저의 결제 내역"을 찾을 때 오늘 파티션 내부의 특정 해시 구역만 콕 집어 검색하므로 성능이 가장 극대화됩니다.
+
+### 6.2. 최종 선택: 일 단위(Daily) Range Partitioning
+
+**"`created_at`(생성일자) 기준의 Range Partitioning"**을 최종 채택했습니다.
+
+- **선택 사유 1 (삭제 성능)**: 대규모 알림 시스템에서 보관 주기(7일)가 지난 1,000만 건의 데이터를 `DELETE`로 지우면 트랜잭션 로그(WAL/Undo) 폭발과 데드락 위험으로 DB가 마비될 수 있습니다. Range 파티셔닝을 쓰면 `DROP PARTITION`으로 디스크 파일 자체를 날려버려 **DB 부하 없이 즉각적인 공간 회수**가 가능합니다.
+- **선택 사유 2 (파티션 프루닝)**: 사용자가 "최근 3일 내 알림"을 조회할 때, MySQL 옵티마이저가 조건에 맞는 최근 3개 파티션만 읽고 나머지는 스캔하지 않아 압도적인 조회 성능을 보장합니다.
+
+
+#### 💻 적용 코드 예시 (MySQL Daily Range Partitioning)
+```sql
+-- 1. 테이블 생성 시 PARTITION BY RANGE 구문 적용
+-- 파티셔닝 기준 컬럼(created_at)이 반드시 PK에 포함되어야 합니다.
+CREATE TABLE alarms (
+    id BIGINT NOT NULL,
+    sender_id VARCHAR(50) NOT NULL,
+    receiver_id VARCHAR(50) NOT NULL,
+    channel_type VARCHAR(10) NOT NULL,
+    status SMALLINT NOT NULL,
+    payload JSON,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (TO_DAYS(created_at)) (
+    PARTITION p_20260624 VALUES LESS THAN (TO_DAYS('2026-06-25')),
+    PARTITION p_20260625 VALUES LESS THAN (TO_DAYS('2026-06-26')),
+    PARTITION p_20260626 VALUES LESS THAN (TO_DAYS('2026-06-27')),
+    PARTITION p_max VALUES LESS THAN MAXVALUE
+);
+
+-- 2. 보관 주기가 지난(예: 7일 전) 과거 파티션 삭제 (0.1초 소요, DB I/O 부하 0)
+ALTER TABLE alarms DROP PARTITION p_20260617;
+
+-- 3. 내일 쓸 신규 파티션 추가 (배치 스케줄러 등을 통해 자동화)
+ALTER TABLE alarms REORGANIZE PARTITION p_max INTO (
+    PARTITION p_20260627 VALUES LESS THAN (TO_DAYS('2026-06-28')),
+    PARTITION p_max VALUES LESS THAN MAXVALUE
+);
+```
+
+### 6.3. 포기한 것 (Trade-offs & 한계점)
+
+- **Hash / Key 파티셔닝 포기**: 트래픽 분산에는 탁월하지만, 과거 데이터 삭제 시 전체 파티션을 뒤져야 하므로 "보관 주기가 지난 데이터의 가벼운 삭제"라는 핵심 요구사항과 맞지 않아 포기했습니다.
+- **MySQL PK 제약조건 감수**: MySQL 파티셔닝은 **파티셔닝 기준 컬럼(`created_at`)이 반드시 Primary Key에 포함**되어야 합니다. 따라서 기존 `(id)` 단일 PK 구조에서 `(id, created_at)` 복합 PK 구조를 강제받게 됩니다.
+- **개발/운영 제약**: 만약 백오피스 등에서 특정 알림 1건을 조회하기 위해 `WHERE id = 123` 조건만 주게 되면, 파티션 프루닝이 발동하지 않아 모든 파티션을 뒤지는 Full Scan이 발생합니다. 이를 막기 위해 API나 백엔드 로직에서 단건 조회 시에도 반드시 `created_at` 조건을 함께 던지도록 개발 규칙을 강제하는 트레이드오프를 감수했습니다.
+
+
+---
+
+
+### 6.4. 다중 서버 환경에서의 파티션 자동화 (ShedLock)
+
+파티션 관리(오래된 파티션 DROP 및 신규 파티션 ADD)는 무조건 비동기적인 배치(Batch) 작업으로 자동화되어야 합니다. (Trigger 사용은 절대 금지)
+
+#### 1. 스케줄러 프레임워크 선택: Spring Quartz vs ShedLock
+서버가 스케일 아웃되어 3대로 늘어났다고 가정했을 때, 매일 새벽 3시에 도는 파티션 정리 스케줄러가 3대 서버에서 동시에 똑같은 DROP 쿼리를 던지게 됩니다. 이를 방지하기 위한 대안을 비교했습니다.
+
+- **Spring Quartz (기존 방식)**: 매우 강력한 엔터프라이즈급 배치 스케줄러입니다. 하지만 분산 환경에서 중복 실행을 막기 위해 11개 이상의 무거운 메타데이터 테이블을 억지로 띄워야 하며, 고작 DDL 2줄을 날리기 위해 도입하기에는 **소 잡는 칼로 닭을 잡는 격**(Overkill)입니다.
+- **ShedLock (선택)**: 오직 **"스케줄러의 중복 실행 방지"**라는 단일 목적에만 집중한 초경량 라이브러리입니다. Redis 같은 별도의 인프라를 구축할 필요 없이, 기존 메인 RDB(PostgreSQL)에 `shedlock` 테이블 하나만 만들어 두면 모든 동시성 문제가 해결됩니다.
+
+#### 2. ShedLock 구현 로직 (`PartitionManagerService.kt`)
+- `@Scheduled(cron = "0 0 3 * * *")` 로 매일 새벽 3시에 구동됩니다.
+- `@SchedulerLock(name = "partition_management", lockAtLeastFor = "5m", lockAtMostFor = "10m")`
+  - `lockAtLeastFor`: 락을 잡은 서버가 최소 5분간 락을 풀지 않습니다. (서버 간 시간차로 인한 중복 실행 완벽 방어)
+  - `lockAtMostFor`: 서버가 쿼리 실행 중 뻗어버리더라도 10분 뒤엔 자동으로 락이 풀립니다. (데드락 방지)
+
+
+#### 3. 서버 초기 기동 시 파티션 부트스트랩(Bootstrap) 전략
+스케줄러만 맹신하다가 **"최초 서버 배포 시점"**이나 **"며칠간 서버가 죽어있다가 복구된 시점"**에 오늘 자 파티션이 누락되어 있다면, 그 순간 인입되는 모든 `INSERT`는 파티션 매핑 실패로 에러를 뿜으며 대규모 데이터 유실 장애를 유발합니다.
+- **해결 방안 (`@EventListener(ApplicationReadyEvent::class)`)**: 
+  애플리케이션이 뜨는 즉시 `information_schema.PARTITIONS` 메타데이터를 조회하여, "오늘"과 "내일" 자 파티션의 물리적 존재 여부를 검증합니다.
+- **동적 할당**: 만약 파티션이 존재하지 않는다면, 그 즉시 스케줄러와 동일한 로직(`REORGANIZE PARTITION`)을 실행하여 파티션을 안전하게 할당한 뒤 정상 기동 상태(Traffic 활성화)로 진입합니다. 이를 통해 **인프라 환경 변화나 배포 시점에도 완벽한 무장애 시스템**을 달성합니다.
+
+## 7. MAU 100만 명 아키텍처를 위한 DB 자료형 최적화
+
+트래픽이 폭증하고 데이터가 1억 건 단위로 쌓이는 환경(MAU 100만 명)에서는 **단 1Byte의 낭비조차 치명적인 디스크 I/O와 인덱스 탐색 속도 저하**로 이어집니다. 본 시스템은 이를 대비하여 극한의 효율을 낼 수 있도록 Entity 및 DB 자료형 매핑을 다음과 같이 고도화했습니다.
+
+### 7.1. Status 컬럼 압축 (VARCHAR -> SMALLINT)
+기존에 `SENT`, `FAILED` 와 같이 문자열로 저장되던 알림 상태(Status) 필드를 물리적 DB에는 **정수형(2 Byte)**으로 저장되도록 최적화했습니다.
+
+- **문제점**: `VARCHAR`로 상태를 저장하면 각 레코드당 약 8~10 Byte가 소모되며, 한 달에 9,000만 건 적재 시 해당 컬럼에만 약 800MB 이상의 용량이 소비됩니다.
+- **해결 방안 (`AlarmStatusConverter`)**: JPA `@Converter`를 도입하여, 애플리케이션 코드에서는 기존과 동일하게 Type-Safe한 Enum(`AlarmStatus.SENT`)을 사용하되, DB에 Insert될 때는 `1`, `2` 같은 `SMALLINT`(2 Byte) 코드로 변환되어 들어가도록 구현했습니다.
+- **기대 효과**: 레코드당 차지하는 용량이 줄어들며 인덱스의 크기도 함께 압축됩니다. 이는 **DB 메모리(Buffer Pool)에 더 많은 인덱스를 캐싱할 수 있게 만들어 초고속 검색(Cursor Paging) 성능을 극대화**합니다.
+
+#### 💻 적용 코드 예시 (`AlarmStatusConverter.kt`)
+```kotlin
+@Converter(autoApply = true)
+class AlarmStatusConverter : AttributeConverter<AlarmStatus, Short> {
+    override fun convertToDatabaseColumn(attribute: AlarmStatus?): Short? = attribute?.code
+    override fun convertToEntityAttribute(dbData: Short?): AlarmStatus? = dbData?.let { AlarmStatus.fromCode(it) }
+}
+```
+
+
+### 7.2. Payload 컬럼 구조화 (TEXT -> JSONB)
+가변적인 메타데이터가 담기는 `payload` 필드를 단순 문자열에서 PostgreSQL 네이티브의 **JSONB** 포맷으로 전환했습니다.
+
+- **문제점**: `TEXT`로 저장하면 내부 데이터를 기준으로 검색("쿠폰 알림만 통계 도출" 등)해야 할 때, 전체 테이블을 풀 스캔하며 파싱해야 하므로 시스템 장애를 유발합니다.
+- **해결 방안 (`@JdbcTypeCode`)**: Hibernate 6의 `@JdbcTypeCode(SqlTypes.JSON)`을 적용하여 DB 저장 시 `JSONB` 바이너리 포맷으로 압축 저장되도록 구현했습니다.
+- **기대 효과**: 저장 공간 최적화는 물론, 향후 비즈니스 요구사항에 의해 payload 내부 검색이 필요해지면 즉각적으로 **GIN 인덱스(Generalized Inverted Index)**를 생성하여 0.1초 내외로 데이터를 뽑아낼 수 있는 아키텍처적 유연성을 확보했습니다.
+
+#### 💻 적용 코드 예시 (`AlarmEntity.kt`)
+```kotlin
+@Convert(converter = AlarmStatusConverter::class)
+@Column(nullable = false, columnDefinition = "SMALLINT")
+val status: AlarmStatus,
+
+@org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.JSON)
+@Column(columnDefinition = "jsonb")
+val payload: String?,
+```
+

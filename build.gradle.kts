@@ -30,6 +30,7 @@ dependencies {
 	implementation("com.github.f4b6a3:uuid-creator:5.3.3")
 	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.16")
 	implementation("org.springframework.kafka:spring-kafka")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
 	runtimeOnly("org.postgresql:postgresql")
 	implementation("org.springframework.boot:spring-boot-starter-webflux")
 
@@ -47,6 +48,10 @@ dependencies {
 
 	// UUIDv7 Generator
 	implementation("com.fasterxml.uuid:java-uuid-generator:5.1.0")
+
+	// ShedLock (Scheduler Distributed Lock)
+	implementation("net.javacrumbs.shedlock:shedlock-spring:5.13.0")
+	implementation("net.javacrumbs.shedlock:shedlock-provider-jdbc-template:5.13.0")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")

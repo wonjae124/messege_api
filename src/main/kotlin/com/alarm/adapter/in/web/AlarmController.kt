@@ -77,6 +77,22 @@ class AlarmController(
         return getAlarmQuery.listAlarms(pageable).map { AlarmResponse.fromDomain(it) }
     }
 
+    @GetMapping("/notifications/history")
+    @Operation(summary = "알람 내역 조회", description = "최근 7일간의 알람 내역을 커서 기반으로 조회합니다.")
+    fun getAlarmHistory(
+        @RequestParam(required = false) senderId: String?,
+        @RequestParam(required = false) receiverId: String?,
+        @RequestParam(required = false) status: com.alarm.domain.AlarmStatus?,
+        @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME) cursorCreatedAt: java.time.LocalDateTime?,
+        @RequestParam(required = false) cursorId: Long?,
+        @RequestParam(defaultValue = "20") limit: Int
+    ): com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse {
+        if (senderId.isNullOrBlank() && receiverId.isNullOrBlank()) {
+            throw IllegalArgumentException("senderId 또는 receiverId 중 하나는 필수입니다.")
+        }
+        return getAlarmQuery.getAlarmHistory(senderId, receiverId, status, cursorCreatedAt, cursorId, limit)
+    }
+
     @PutMapping("/notifications/{id}")
     @Operation(summary = "알람 정보 수정", description = "알람 이름, 페이로드, 상태 등을 수정합니다.")
     fun updateAlarm(

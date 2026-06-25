@@ -180,7 +180,7 @@ class KafkaAlarmJobConsumer(
                 }
 
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
-                    alarmId = alarmIdLong.toString(),
+                    alarmId = alarmIdLong,
                     status = "SUCCESS",
                     requestId = requestId,
                     traceId = parsedPayload.traceId,
@@ -228,7 +228,7 @@ class KafkaAlarmJobConsumer(
                 }
                 
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
-                    alarmId = alarmIdLong.toString(),
+                    alarmId = alarmIdLong,
                     status = logStatus,
                     errorMessage = e.message,
                     requestId = requestId,

@@ -22,6 +22,11 @@ class JpaAlarmOutboxEventRepositoryAdapter(
         return springDataAlarmOutboxEventRepository.save(entity).toDomain()
     }
 
+    override fun saveAll(events: List<AlarmOutboxEvent>): List<AlarmOutboxEvent> {
+        val entities = events.map { AlarmOutboxEventEntity.fromDomain(it) }
+        return springDataAlarmOutboxEventRepository.saveAll(entities).map { it.toDomain() }
+    }
+
     override fun findPendingEventsForUpdate(now: java.time.LocalDateTime, limit: Int): List<AlarmOutboxEvent> {
         return springDataAlarmOutboxEventRepository.findPendingEventsForUpdate(now, limit)
             .map { it.toDomain() }

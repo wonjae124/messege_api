@@ -14,7 +14,7 @@ import java.util.UUID
  */
 class AlarmOutboxEvent private constructor(
     val id: Long,
-    val alarmId: String,
+    val alarmId: Long,
     val senderId: String,
     val receiverId: String,
     val uuid: String,
@@ -29,7 +29,7 @@ class AlarmOutboxEvent private constructor(
             val uuid = alarm.id.toString()
             return AlarmOutboxEvent(
                 id = Math.abs(UUID.randomUUID().mostSignificantBits), // 애플리케이션에서 Long PK 직접 생성
-                alarmId = alarm.id.toString(),
+                alarmId = alarm.id,
                 senderId = alarm.senderId,
                 receiverId = alarm.receiverId,
                 uuid = uuid,
@@ -43,7 +43,7 @@ class AlarmOutboxEvent private constructor(
 
         fun reconstruct(
             id: Long,
-            alarmId: String,
+            alarmId: Long,
             senderId: String,
             receiverId: String,
             uuid: String,

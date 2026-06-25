@@ -19,7 +19,7 @@ class AlarmOutboxEventEntity(
     val id: Long,
 
     @Column(name = "alarm_id", nullable = false)
-    val alarmId: String,
+    val alarmId: Long,
 
     @Column(name = "sender_id", nullable = false)
     val senderId: String,

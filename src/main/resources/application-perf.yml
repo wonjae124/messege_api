@@ -107,7 +107,7 @@ otel:
 # 알람 애플리케이션 전용 비즈니스 로직 제어 파라미터
 alarm:
   outbox:
-    batch-size: 50            # 스케줄러 1회 동작 시 폴링하여 처리할 PENDING 이벤트 최대 개수
+    batch-size: 1000            # 스케줄러 1회 동작 시 폴링하여 처리할 PENDING 이벤트 최대 개수
   
   rate-limiter:
     capacity: 500              # Token Bucket 알고리즘: 담아둘 수 있는 최대 호출 횟수

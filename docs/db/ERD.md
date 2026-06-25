@@ -16,17 +16,17 @@ erDiagram
         VARCHAR receiver_id
         VARCHAR channel_type
         VARCHAR name
-        VARCHAR status
-        TEXT payload
+        SMALLINT status
+        JSONB payload
         VARCHAR location
-        TIMESTAMP created_at
+        TIMESTAMP created_at PK
         TIMESTAMP updated_at
     }
 
     alarm_execution_logs {
         BIGINT seq PK
         UUID id UK
-        VARCHAR alarm_id FK "References alarms.id"
+        BIGINT alarm_id FK "References alarms.id"
         TIMESTAMP triggered_at
         VARCHAR status
         TEXT error_message
@@ -43,8 +43,8 @@ erDiagram
     }
 
     alarm_outbox_events {
-        VARCHAR id PK
-        VARCHAR alarm_id FK "References alarms.id"
+        BIGINT id PK
+        BIGINT alarm_id FK "References alarms.id"
         VARCHAR sender_id
         VARCHAR receiver_id
         VARCHAR uuid
@@ -70,15 +70,15 @@ erDiagram
 ## Table Descriptions
 
 ### 1. `alarms` (알람 마스터 테이블)
-알람 발송 요청의 마스터 정보를 저장합니다.
+알람 발송 요청의 마스터 정보를 저장합니다. 대규모 데이터를 위한 파티셔닝(Range) 전략과 압축 최적화가 적용되었습니다.
 - `id`: 알람 고유 ID (Primary Key)
 - `sender_id`: 발송자 ID
 - `receiver_id`: 수신자 ID
 - `channel_type`: 알람 발송 채널 (예: SMS, EMAIL, PUSH 등)
 - `name`: 알람명
-- `status`: 현재 알람 상태
-- `payload`: 알람 발송 페이로드
-- `created_at` / `updated_at`: 생성/수정 시간
+- `status`: 현재 알람 상태 (SMALLINT 타입으로 2Byte 압축 적용)
+- `payload`: 알람 발송 페이로드 (PostgreSQL JSONB / MySQL JSON 타입으로 저장하여 GIN 인덱싱 대비)
+- `created_at` / `updated_at`: 생성/수정 시간 (파티셔닝 기준 컬럼이므로 Primary Key에 포함됨)
 
 ### 2. `alarm_execution_logs` (알람 실행 이력 테이블)
 알람 발송 과정에서의 실행 이력 및 결과를 기록합니다. 재시도 정보 등을 포함합니다.

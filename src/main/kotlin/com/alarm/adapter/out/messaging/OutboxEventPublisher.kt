@@ -10,6 +10,9 @@ import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.LocalDateTime
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+
 
 /**
  * [파일명] OutboxEventPublisher.kt
@@ -27,8 +30,8 @@ class OutboxEventPublisher(
 ) {
     private val logger = LoggerFactory.getLogger(OutboxEventPublisher::class.java)
 
-    @Scheduled(fixedDelay = 1000)
-    fun publishPendingEvents() {
+    @Scheduled(fixedDelay = 500)
+    fun publishOutboxEvents() {
         val now = LocalDateTime.now()
         
         // 1. Tx1: 조회 및 PROCESSING 마킹 후 즉시 커밋 (DB 락 및 커넥션 해제)
@@ -45,37 +48,42 @@ class OutboxEventPublisher(
 
         logger.info("Outbox: {} PENDING 이벤트 발행 시작", pendingEvents.size)
 
-        // 2. Tx 외부: 루프 돌며 Kafka 네트워크 I/O 수행 (DB 커넥션 없음)
-        for (event in pendingEvents) {
+        // 2. 비동기 카프카 발행: 루프를 돌며 send만 호출 (내부적으로 백그라운드 배칭 처리됨)
+        val futures = pendingEvents.map { event ->
+            event to messageQueuePort.publishAlarmJobFromOutbox(event)
+        }
+
+        val successEvents = mutableListOf<com.alarm.domain.AlarmOutboxEvent>()
+        val failedEvents = mutableListOf<com.alarm.domain.AlarmOutboxEvent>()
+
+        // 3. 동기 대기: 이미 비동기로 쏘아진 메시지들의 ACK를 기다림
+        for ((event, future) in futures) {
             try {
-                // 브로커 동기 대기가 포함된 발행 메서드 호출
-                messageQueuePort.publishAlarmJobFromOutbox(event)
-                
-                // 3-A. Tx2 (발행 성공): outbox 이벤트 상태를 PROCESSING → PUBLISHED 로 전환하고
-                //       publishedAt 을 현재 시각으로 기록한 뒤 개별 트랜잭션으로 커밋
-                transactionTemplate.executeWithoutResult {
-                    event.markPublished()                       // status = PUBLISHED, publishedAt = now
-                    alarmOutboxEventRepositoryPort.save(event)
-                }
+                future.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                event.markPublished()
+                successEvents.add(event)
                 logger.debug("Outbox: alarmId={} Kafka 발행 완료", event.alarmId)
             } catch (e: Exception) {
-                // 3-B. Tx2 (발행 실패): retryCount++ 후 분기 처리
-                //   - retryCount <= 3 : status 는 PROCESSING 유지, nextRetryAt 을 지수 백오프(5·10·20 초) 로 밀어 재시도 예약
-                //   - retryCount >  3 : status = PUBLISH_FAILED 로 전환하고 alarm 테이블의 status 도 FAILED 로 일괄 변경
-                transactionTemplate.executeWithoutResult {
-                    val isFinalFail = event.recordFailure()     // retryCount++, nextRetryAt 갱신 (또는 PUBLISH_FAILED 전환)
-                    alarmOutboxEventRepositoryPort.save(event)
-                    if (isFinalFail) {
-                        // 최종 실패: alarm 테이블 status = FAILED 로 동기화
+                val isFinalFail = event.recordFailure() // 지수 백오프 알고리즘에 따라 실패 횟수 기록, 대기 시간(5초 -> 10초 -> 20초)
+                failedEvents.add(event)
+                if (isFinalFail) {
+                    transactionTemplate.executeWithoutResult {
                         alarmRepositoryPort.findById(event.alarmId.toLong())?.let { a ->
                             a.fail("PUBLISHER")
                             alarmRepositoryPort.save(a)
                         }
-                        logger.error("Outbox: alarmId={} Kafka 발행 최종 실패 → FAILED", event.alarmId, e)
-                    } else {
-                        logger.warn("Outbox: alarmId={} Kafka 발행 일시 실패. 재시도 횟수: {}, 다음 재시도: {}", event.alarmId, event.retryCount, event.nextRetryAt, e)
                     }
+                    logger.error("Outbox: alarmId={} Kafka 발행 최종 실패 → FAILED", event.alarmId, e)
+                } else {
+                    logger.warn("Outbox: alarmId={} Kafka 발행 일시 실패. 재시도: {}", event.alarmId, event.retryCount, e)
                 }
+            }
+        }
+
+        // 4. 단일 DB 트랜잭션: 성공 및 실패 건들을 한 방에 일괄 업데이트 (Batch Update)
+        if (successEvents.isNotEmpty() || failedEvents.isNotEmpty()) {
+            transactionTemplate.executeWithoutResult {
+                alarmOutboxEventRepositoryPort.saveAll(successEvents + failedEvents)
             }
         }
     }

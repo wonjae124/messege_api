@@ -71,7 +71,7 @@ class AlarmExecutionLogEntity(
         fun fromDomain(log: AlarmExecutionLog): AlarmExecutionLogEntity {
             return AlarmExecutionLogEntity(
                 id = log.id,
-                alarmId = log.alarmId.toLong(),
+                alarmId = log.alarmId,
                 triggeredAt = log.triggeredAt,
                 status = log.status,
                 errorMessage = log.errorMessage,
@@ -92,7 +92,7 @@ class AlarmExecutionLogEntity(
     fun toDomain(): AlarmExecutionLog {
         return AlarmExecutionLog.reconstruct(
             id = id,
-            alarmId = alarmId.toString(),
+            alarmId = alarmId,
             triggeredAt = triggeredAt,
             status = status,
             errorMessage = errorMessage,

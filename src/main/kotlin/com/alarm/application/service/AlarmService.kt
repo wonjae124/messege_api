@@ -97,6 +97,34 @@ class AlarmService(
         return alarmRepositoryPort.findAll(pageable)
     }
 
+    override fun getAlarmHistory(
+        senderId: String?,
+        receiverId: String?,
+        status: com.alarm.domain.AlarmStatus?,
+        cursorCreatedAt: java.time.LocalDateTime?,
+        cursorId: Long?,
+        limit: Int
+    ): com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse {
+        val cutoffDate = java.time.LocalDateTime.now().minusDays(7)
+        // limit + 1개를 조회하여 hasNext 여부를 확인합니다.
+        val alarms = alarmRepositoryPort.findHistoryByCursor(
+            senderId, receiverId, status, cutoffDate, cursorCreatedAt, cursorId, limit + 1
+        )
+        
+        val hasNext = alarms.size > limit
+        val resultAlarms = if (hasNext) alarms.take(limit) else alarms
+        
+        val nextCursorCreatedAt = resultAlarms.lastOrNull()?.createdAt
+        val nextCursorId = resultAlarms.lastOrNull()?.id
+        
+        return com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse(
+            alarms = resultAlarms.map { com.alarm.adapter.`in`.web.dto.AlarmResponse.fromDomain(it) },
+            nextCursorCreatedAt = nextCursorCreatedAt,
+            nextCursorId = nextCursorId,
+            hasNext = hasNext
+        )
+    }
+
     @Transactional
     override fun updateAlarm(command: UpdateAlarmUseCase.UpdateAlarmCommand): Alarm {
         val alarm = alarmRepositoryPort.findById(resolveId(command.id))

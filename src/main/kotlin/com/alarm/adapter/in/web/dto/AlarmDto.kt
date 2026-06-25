@@ -50,3 +50,10 @@ data class AlarmResponse(
         }
     }
 }
+
+data class AlarmHistoryResponse(
+    val alarms: List<AlarmResponse>,
+    val nextCursorCreatedAt: LocalDateTime?,
+    val nextCursorId: Long?,
+    val hasNext: Boolean
+)

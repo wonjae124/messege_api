@@ -48,4 +48,25 @@ class JpaAlarmRepositoryAdapter(
         springDataAlarmRepository.delete(entity)
     }
 
+    override fun findHistoryByCursor(
+        senderId: String?,
+        receiverId: String?,
+        status: com.alarm.domain.AlarmStatus?,
+        cutoffDate: LocalDateTime,
+        cursorCreatedAt: LocalDateTime?,
+        cursorId: Long?,
+        limit: Int
+    ): List<Alarm> {
+        val pageable = org.springframework.data.domain.PageRequest.of(0, limit)
+        
+        val entities = if (!senderId.isNullOrBlank()) {
+            springDataAlarmRepository.findHistoryBySenderId(senderId, status, cutoffDate, cursorCreatedAt, cursorId, pageable)
+        } else if (!receiverId.isNullOrBlank()) {
+            springDataAlarmRepository.findHistoryByReceiverId(receiverId, status, cutoffDate, cursorCreatedAt, cursorId, pageable)
+        } else {
+            emptyList() // Controller layer should validate this beforehand
+        }
+        
+        return entities.map { it.toDomain() }
+    }
 }

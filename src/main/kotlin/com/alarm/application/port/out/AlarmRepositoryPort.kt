@@ -16,4 +16,13 @@ interface AlarmRepositoryPort {
     fun findById(id: Long): Alarm?
     fun findAll(pageable: Pageable): Page<Alarm>
     fun delete(alarm: Alarm)
+    fun findHistoryByCursor(
+        senderId: String?,
+        receiverId: String?,
+        status: com.alarm.domain.AlarmStatus?,
+        cutoffDate: java.time.LocalDateTime,
+        cursorCreatedAt: java.time.LocalDateTime?,
+        cursorId: Long?,
+        limit: Int
+    ): List<Alarm>
 }
