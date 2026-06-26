@@ -70,7 +70,7 @@ class Resilience4jConfig(
                     2.0,
                     retryJitter // 주문 버튼을 누른 수만 명의 스마트폰(대다수의 클라이언트) 화면에 일제히 "주문 실패" 에러 발생한 상황(외부 API 불안정). 모두 같은 시간 동안 대기 한 후 재요청 하면 동시에 요청을 받은 서버는 터지기 마련임. 따라서 랜덤한 시간으로 요청을 보내게 만듦.
                 )
-            )
+            )j
             .retryOnException { throwable ->
                 (throwable is WebClientResponseException && (throwable.statusCode.value() == 429 || throwable.statusCode.is5xxServerError)) ||
                 (throwable is TimeoutException || throwable is ReadTimeoutException)

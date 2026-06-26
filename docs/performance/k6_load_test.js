@@ -32,7 +32,7 @@ export const options = {
       rate: __ENV.RPS || 10,
       timeUnit: '1s',
       duration: __ENV.DURATION || '60s',
-      preAllocatedVUs: 100,
+      preAllocatedVUs: 2000, // (증가됨) 테스트 시작 전에 미리 VU를 넉넉하게 생성해두어 Dropped Iteration 방지
       maxVUs: 5000, // 서버가 아무리 느려도 K6가 절대 포기하지 않도록 매우 넉넉히 잡음
     },
   },
@@ -45,7 +45,7 @@ export const options = {
 
 export default function () {
   // TODO: 실제 알림 발송 API 엔드포인트와 Body 데이터로 수정하세요
-  const url = 'http://localhost:8080/notifications';
+  const url = 'http://localhost/notifications';
   const payload = JSON.stringify({
     receiverId: `user-${__VU}`,
     name: "RPS Test Alarm",

@@ -115,11 +115,13 @@ alarm:
     refill-period-seconds: 1   # 리필 주기 (기본: 1초마다 500개씩 리필)
   
   circuit-breaker:
-    failure-rate-threshold: 50          # 에러 발생률이 50%를 넘으면 서킷 브레이커 OPEN (요청 차단)
-    sliding-window-size: 10             # 최근 10번의 호출을 기준으로 에러율 계산
-    wait-duration-in-open-state: 30s    # OPEN 상태가 된 후, 다시 HALF_OPEN(시험 호출)으로 전환되기까지 대기 시간
-    slow-call-duration-threshold: 3s    # 3초 이상 지연된 응답을 느린 호출(Slow Call)로 간주
-    slow-call-rate-threshold: 80        # 느린 호출 비율이 80% 이상이어도 서킷 브레이커 OPEN
+    failure-rate-threshold: 50
+    sliding-window-size: 100
+    sliding-window-type: COUNT_BASED
+    minimum-number-of-calls: 50
+    wait-duration-in-open-state: 60s
+    slow-call-duration-threshold: 2s
+    slow-call-rate-threshold: 50
 
 
 # --- Performance Test Specific Settings ---
