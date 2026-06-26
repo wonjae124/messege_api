@@ -32,21 +32,21 @@
 
 ```mermaid
 flowchart TD
-    subgraph "1. Connection & Resilience"
-        A[Kafka Consumer] -->|Singleton WebClient| B(HTTP Connection Pool<br>Max 100, Timeout 5s)
-        B -->|4-Step Timeout| C[SendMock API]
-        B -.->|Fail-Fast| D[Circuit Breaker / Retry]
+    subgraph group1 ["1. Connection & Resilience"]
+        A["Kafka Consumer"] -->|"Singleton WebClient"| B("HTTP Connection Pool<br>Max 100, Timeout 5s")
+        B -->|"4-Step Timeout"| C["SendMock API"]
+        B -.->|"Fail-Fast"| D["Circuit Breaker / Retry"]
     end
 
-    subgraph "3. Concurrency & Queueing"
-        E[Outbox Scheduler 1..N] -->|SELECT FOR UPDATE<br>SKIP LOCKED| F[(PostgreSQL Outbox)]
-        G[Partition Scheduler] -->|ShedLock<br>Single Execution| H[(PostgreSQL Main DB)]
+    subgraph group3 ["3. Concurrency & Queueing"]
+        E["Outbox Scheduler 1..N"] -->|"SELECT FOR UPDATE<br>SKIP LOCKED"| F[("PostgreSQL Outbox")]
+        G["Partition Scheduler"] -->|"ShedLock<br>Single Execution"| H[("PostgreSQL Main DB")]
     end
 
-    subgraph "2. Data Architecture"
-        H -->|Range Partitioning| I[Daily Partitions]
-        H -->|Cursor Paging| J[O(1) Seek Performance]
-        H -->|Optimized Index| K[JSONB / SMALLINT]
+    subgraph group2 ["2. Data Architecture"]
+        H -->|"Range Partitioning"| I["Daily Partitions"]
+        H -->|"Cursor Paging"| J["O(1) Seek Performance"]
+        H -->|"Optimized Index"| K["JSONB / SMALLINT"]
     end
     
     F -.-> A
