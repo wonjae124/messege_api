@@ -62,11 +62,11 @@ mock:
     url: ${MOCK_API_URL:http://localhost:8081} # 대상 외부 API 주소 (도커: MOCK_API_URL=http://sendmock:8081)
     timeout:
       connect-millis: 5000     # 커넥션 연결 타임아웃 (밀리초), 소켓 연결
-      response-seconds: 5      # 전체 HTTP 응답 대기 타임아웃 (초), 요청‑응답 흐름(연결 + 쓰기 + 읽기 포함)에 대한 상한 시간
+      response-seconds: 6      # 전체 HTTP 응답 대기 타임아웃 (초), 요청‑응답 흐름(연결 + 쓰기 + 읽기 포함)에 대한 상한 시간
       write-seconds: 2         # 쓰기 타임아웃 (초), 클라이언트 => 서버, 요청 본문을 보내는 시간
                                #   - POST /api/orders 로 5MB JSON을 전송하는데 4초가 걸리면 정상, 6초가 걸리면 예외 발생
                                #   - 짧게 잡으면 전송 실패를 빠르게 감지하고 재시도하거나 차단
-      read-seconds: 3          # 읽기 타임아웃 (초), 서버 => 클라이언트, 응답 본문을 받는 시간
+      read-seconds: 5          # 읽기 타임아웃 (초), 서버 => 클라이언트, 응답 본문을 받는 시간
                                #   - GET /api/status 로 호출했을 때 서버가 2초 뒤에 응답을 시작했지만, 전체 바디를 4초 안에 다 읽지 못하면 예외 발생
                                #   - 짧게 잡으면 서버 지연을 빠르게 감지해 서비스 레이턴시를 제어
     retry:
@@ -119,8 +119,10 @@ alarm:
     sliding-window-size: 100
     sliding-window-type: COUNT_BASED
     minimum-number-of-calls: 50
-    wait-duration-in-open-state: 60s
-    slow-call-duration-threshold: 2s
+    permitted-number-of-calls-in-half-open-state: 10
+    wait-duration-in-open-state: 30s
+    automatic-transition-from-open-to-half-open-enabled: true
+    slow-call-duration-threshold: 5s
     slow-call-rate-threshold: 50
 
 

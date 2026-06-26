@@ -16,13 +16,16 @@ class KafkaRetryConfig(
     // 대기 시간의 최대 상한(ms). 기본값 30000ms(30초)
     @Value("\${spring.kafka.retry.max-interval:30000}") private val maxInterval: Long,
     // 재시도 허용 최대 횟수. 기본값 4번(최초 시도 제외, 총 5번 시도)
-    @Value("\${spring.kafka.retry.max-attempts:4}") private val maxAttempts: Int
+    @Value("\${spring.kafka.retry.max-attempts:4}") private val maxAttempts: Int,
+    @Value("\${spring.kafka.topic.partitions:3}") private val partitions: Int,
+    @Value("\${spring.kafka.topic.replication-factor:3}") private val replicas: Short
 ) {
 
 @Bean
     fun retryTopicConfig(template: KafkaTemplate<String, String>): RetryTopicConfiguration {
         // Builder를 사용해 재시도 토픽 구성을 정의합니다.
         return RetryTopicConfigurationBuilder.newInstance()
+            .autoCreateTopicsWith(partitions, replicas)
             // 지수 백오프: initialInterval → * multiplier → maxInterval 까지 증가
             .exponentialBackoff(initialInterval, multiplier, maxInterval)
             // 최대 재시도 횟수 지정

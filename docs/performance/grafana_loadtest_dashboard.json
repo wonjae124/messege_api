@@ -764,6 +764,134 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 80 },
+      "id": 106,
+      "title": "🚦 트래픽 제어 (Rate Limiter & Timeouts)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "spanNulls": false, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 81 },
+      "id": 80,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "title": "🛑 Rate Limiter 차단 수 (429 Too Many Requests)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{status=\"429\"}[30s])) or vector(0)",
+          "legendFormat": "Blocked by RateLimit / sec",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "spanNulls": false, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 81 },
+      "id": 81,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "title": "⏳ Server Errors & Timeouts (5xx)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{status=~\"5..\"}[30s]))",
+          "legendFormat": "5xx Errors / sec",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "spanNulls": false, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*성공.*" },
+            "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*재시도 후 성공.*" },
+            "properties": [ { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } } ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*실패.*" },
+            "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 89 },
+      "id": 108,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "title": "Mock API 외부 통신 (Resilience4j Retry)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(resilience4j_retry_calls_total{name=\"externalApi\", kind=\"successful_without_retry\"}[30s])) or vector(0)",
+          "legendFormat": "1차 시도 성공",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(resilience4j_retry_calls_total{name=\"externalApi\", kind=\"successful_with_retry\"}[30s])) or vector(0)",
+          "legendFormat": "재시도 후 성공",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(resilience4j_retry_calls_total{name=\"externalApi\", kind=\"failed_with_retry\"}[30s])) or vector(0)",
+          "legendFormat": "재시도 후 최종 실패",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(resilience4j_retry_calls_total{name=\"externalApi\", kind=\"failed_without_retry\"}[30s])) or vector(0)",
+          "legendFormat": "재시도 없이 실패",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "spanNulls": false, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 89 },
+      "id": 109,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "title": "Kafka Topic Messages & Consumer Lag",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(kafka_topic_partition_current_offset{topic=\"alarm.topic\"}) or vector(0)",
+          "legendFormat": "Total Messages (Offset)",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(kafka_consumergroup_lag{topic=\"alarm.topic\"}) or vector(0)",
+          "legendFormat": "Consumer Lag (Pending)",
+          "refId": "B"
+        }
+      ]
     }
   ],
   "refresh": "5s",

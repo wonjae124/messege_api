@@ -523,3 +523,18 @@ Zookeeper 및 Kafka 환경을 Docker Compose를 활용해 기동한 후 애플�
    ```bash
    ./gradlew test
    ```
+
+### 7.2. 성능 테스트 환경 (perf) 실행 방법
+성능 테스트 환경을 위한 별도의 도커 컴포즈 파일(`docker-compose-perf.yml`)을 사용하여 전체 시스템(API, Kafka, Redis, 모니터링 등)을 실행하고 관리하는 방법입니다.
+
+1. **기존 컨테이너 및 볼륨 초기화 (삭제)**:
+   기존 컨테이너와 연결된 데이터 볼륨까지 깔끔하게 지웁니다.
+   ```bash
+   docker compose -f docker-compose-perf.yml down -v
+   ```
+
+2. **새로 빌드하고 백그라운드에서 실행**:
+   이미지를 새로 빌드하고(`--build`) 백그라운드(`-d`)에서 컨테이너를 띄웁니다.
+   ```bash
+   docker compose -f docker-compose-perf.yml up --build -d
+   ```

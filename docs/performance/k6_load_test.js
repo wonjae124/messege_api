@@ -44,10 +44,11 @@ export const options = {
 };
 
 export default function () {
-  // TODO: 실제 알림 발송 API 엔드포인트와 Body 데이터로 수정하세요
   const url = 'http://localhost/notifications';
   const payload = JSON.stringify({
+    senderId: 'test-sender',
     receiverId: `user-${__VU}`,
+    channelType: 'PUSH',
     name: "RPS Test Alarm",
     payload: JSON.stringify({ message: "테스트 알림입니다." })
   });

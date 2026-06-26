@@ -52,8 +52,12 @@ class ShedLockConfig {
         try {
             jdbcTemplate.execute(createTableSql)
         } catch (e: Exception) {
-            // 테이블이 이미 존재하거나 권한 부족 등의 이슈 발생 시 로깅만 수행
-            println("[ShedLockConfig] shedlock 테이블 생성 중 오류 발생 또는 이미 존재함: ${e.message}")
+            // PostgreSQL 다중 인스턴스 환경에서 동시 생성으로 인한 제약 조건 위반은 정상 동작이므로 로그를 간소화
+            if (e.message?.contains("already exists") == true || e.message?.contains("duplicate key") == true) {
+                println("[ShedLockConfig] shedlock 테이블이 이미 존재하여 생성을 스킵합니다.")
+            } else {
+                println("[ShedLockConfig] shedlock 테이블 생성 무시 (권한 부족 또는 이미 존재함).")
+            }
         }
     }
 }

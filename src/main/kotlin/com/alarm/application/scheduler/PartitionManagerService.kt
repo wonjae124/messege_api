@@ -65,7 +65,7 @@ class PartitionManagerService(
             }
             println("[PartitionManager] 초기 파티션 검증 완료. 정상 동작 가능 상태입니다.")
         } catch (e: Exception) {
-            println("[PartitionManager] 파티션 메타데이터 조회 무시 (로컬 H2 환경이거나 권한 부족): ${e.message}")
+            println("[PartitionManager] 파티션 메타데이터 조회 무시 (로컬 H2 또는 PostgreSQL 환경에서는 MySQL 전용 파티션 문법을 지원하지 않아 무시됩니다.)")
         }
     }
 
@@ -109,7 +109,7 @@ class PartitionManagerService(
 
         } catch (e: Exception) {
             // H2 등 파티셔닝을 지원하지 않는 환경이거나 이미 처리된 경우 예외 발생
-            println("[PartitionManager] 파티션 쿼리 실행 무시 (로컬 H2 환경이거나 DB 제약조건): ${e.message}")
+            println("[PartitionManager] 파티션 쿼리 실행 무시 (로컬 H2 또는 PostgreSQL 환경에서는 지원하지 않아 무시됩니다.)")
         }
     }
 }

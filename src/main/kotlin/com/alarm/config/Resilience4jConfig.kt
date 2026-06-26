@@ -24,7 +24,11 @@ import org.slf4j.LoggerFactory
 class Resilience4jConfig(
     @Value("\${alarm.circuit-breaker.failure-rate-threshold:50}") private val failureRateThreshold: Float,
     @Value("\${alarm.circuit-breaker.sliding-window-size:10}") private val slidingWindowSize: Int,
+    @Value("\${alarm.circuit-breaker.sliding-window-type:COUNT_BASED}") private val slidingWindowType: String,
+    @Value("\${alarm.circuit-breaker.minimum-number-of-calls:10}") private val minimumNumberOfCalls: Int,
+    @Value("\${alarm.circuit-breaker.permitted-number-of-calls-in-half-open-state:10}") private val permittedNumberOfCallsInHalfOpenState: Int,
     @Value("\${alarm.circuit-breaker.wait-duration-in-open-state:30s}") private val waitDuration: String,
+    @Value("\${alarm.circuit-breaker.automatic-transition-from-open-to-half-open-enabled:true}") private val automaticTransitionEnabled: Boolean,
     @Value("\${alarm.circuit-breaker.slow-call-duration-threshold:3s}") private val slowCallDuration: String,
     @Value("\${alarm.circuit-breaker.slow-call-rate-threshold:80}") private val slowCallRate: Float,
     @Value("\${mock.api.retry.max-attempts:3}") private val retryMaxAttempts: Int,
@@ -40,11 +44,14 @@ class Resilience4jConfig(
 
         val config = CircuitBreakerConfig.custom()
             .failureRateThreshold(failureRateThreshold)
+            .slidingWindowType(io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.SlidingWindowType.valueOf(slidingWindowType))
             .slidingWindowSize(slidingWindowSize)
+            .minimumNumberOfCalls(minimumNumberOfCalls)
             .waitDurationInOpenState(parsedWaitDuration)
+            .automaticTransitionFromOpenToHalfOpenEnabled(automaticTransitionEnabled)
             .slowCallDurationThreshold(parsedSlowCallDuration)
             .slowCallRateThreshold(slowCallRate)
-            .permittedNumberOfCallsInHalfOpenState(3)
+            .permittedNumberOfCallsInHalfOpenState(permittedNumberOfCallsInHalfOpenState)
             .build()
 
         val circuitBreaker = registry.circuitBreaker("externalApi", config)
@@ -68,9 +75,10 @@ class Resilience4jConfig(
                 IntervalFunction.ofExponentialRandomBackoff(
                     Duration.ofSeconds(retryMinBackoffSeconds), // 최초 대기 시간
                     2.0,
-                    retryJitter // 주문 버튼을 누른 수만 명의 스마트폰(대다수의 클라이언트) 화면에 일제히 "주문 실패" 에러 발생한 상황(외부 API 불안정). 모두 같은 시간 동안 대기 한 후 재요청 하면 동시에 요청을 받은 서버는 터지기 마련임. 따라서 랜덤한 시간으로 요청을 보내게 만듦.
+                    retryJitter, // 주문 버튼을 누른 수만 명의 스마트폰(대다수의 클라이언트) 화면에 일제히 "주문 실패" 에러 발생한 상황(외부 API 불안정). 모두 같은 시간 동안 대기 한 후 재요청 하면 동시에 요청을 받은 서버는 터지기 마련임. 따라서 랜덤한 시간으로 요청을 보내게 만듦.
+                    Duration.ofSeconds(retryMaxBackoffSeconds)  // 최대 대기 시간 상한 적용
                 )
-            )j
+            )
             .retryOnException { throwable ->
                 (throwable is WebClientResponseException && (throwable.statusCode.value() == 429 || throwable.statusCode.is5xxServerError)) ||
                 (throwable is TimeoutException || throwable is ReadTimeoutException)

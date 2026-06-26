@@ -9,6 +9,7 @@ import com.alarm.domain.AlarmExecutionLog
 import com.alarm.domain.AlarmStatus
 import com.alarm.exception.ExternalApiException
 import com.alarm.exception.AlarmNotFoundException
+import com.alarm.exception.CircuitBreakerOpenException
 import com.alarm.exception.ConcurrentProcessingException
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
@@ -199,7 +200,11 @@ class KafkaAlarmJobConsumer(
                 val elapsedTime = System.currentTimeMillis() - startTime
                 // 리액터 스레드 임시 MDC 로깅 설정
                 MDC.put("requestId", requestId)
-                logger.error("Failed to execute API call for alarm: alarmId = {}", alarmIdLong, e)
+                if (e is CircuitBreakerOpenException) {
+                    logger.warn("Failed to execute API call for alarm: alarmId = {} - Circuit breaker is OPEN", alarmIdLong)
+                } else {
+                    logger.error("Failed to execute API call for alarm: alarmId = {}", alarmIdLong, e)
+                }
                 MDC.clear()
 
                 // 실패 시 락을 해제하여 다음 재시도를 가능하게 함

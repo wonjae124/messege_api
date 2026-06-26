@@ -53,6 +53,8 @@ services:
       - "4318:4318"   # OTLP HTTP
     environment:
       - ENABLE_LOGS_OTEL=true
+    volumes:
+      - lgtm-storage:/data
     networks:
       - perfnet
 
@@ -77,6 +79,7 @@ services:
     deploy:
       replicas: 3
       resources:
+
         limits:
           memory: 2048M
     environment:
@@ -107,6 +110,7 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter
     container_name: redis-exporter-perf
+    restart: always
     environment:
       REDIS_ADDR: "redis://redis-perf:6379"
     ports:
@@ -119,6 +123,7 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter
     container_name: postgres-exporter-perf
+    restart: always
     environment:
       DATA_SOURCE_NAME: "postgresql://alarmuser:alarmpass@postgres-perf:5432/alarmdb?sslmode=disable"
     ports:
@@ -131,6 +136,7 @@ services:
   kafka-exporter:
     image: danielqsj/kafka-exporter
     container_name: kafka-exporter-perf
+    restart: always
     command: ["--kafka.server=kafka-perf:29092"]
     ports:
       - "9308:9308"
@@ -157,3 +163,6 @@ services:
 networks:
   perfnet:
     driver: bridge
+
+volumes:
+  lgtm-storage:

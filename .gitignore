@@ -41,3 +41,7 @@ out/
 
 ### Logs ###
 logs/
+
+### Grafana LGTM Data ###
+lgtm-data/*
+!lgtm-data/.gitkeep
