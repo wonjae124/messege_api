@@ -1,49 +1,81 @@
-# 3주차 과제 - 즉시 발송 알림 시스템의 HTTP 커넥션 풀 아키텍처 의사결정
+# 3주차 과제 - 대규모 알림 시스템의 커넥션 최적화 및 파티셔닝 아키텍처 의사결정
 
 ## 📝 개괄 (Overview)
-본 시스템은 사용자에게 알림을 **즉시 발송**하는 것이 핵심 목적입니다. Kafka 컨슈머가 메시지를 소비하는 순간부터 외부 API(SendMock)를 통해 실제 발송이 완료되기까지의 **레이턴시를 최소화**해야 하며, 동시에 외부 API 장애가 내부 시스템을 마비시키지 않아야 합니다.
+본 문서는 대규모 트래픽 환경에서 알림을 **즉시 발송**하고, 누적되는 **대용량 데이터를 안정적으로 처리**하기 위해 내린 아키텍처 의사결정을 정리합니다. 
 
-이 문서는 즉시 발송이라는 서비스 특성을 고려하여, WebClient/Reactor Netty 기반 HTTP 클라이언트의 **커넥션 풀(Connection Pool) 기본값의 함정**을 분석하고, "**빠르게 보내되, 보낼 수 없으면 빠르게 포기하고 재시도 파이프라인에 맡긴다**"는 설계 철학 하에 내린 아키텍처 의사결정을 정리합니다.
+크게 두 가지 핵심 목표를 가지고 진행되었습니다:
+1. **외부 통신 및 커넥션 최적화**: "빠르게 보내되, 보낼 수 없으면 빠르게 실패(Fail-Fast)하여 시스템 마비를 방지한다"는 철학 하에 HTTP 및 DB 커넥션 풀을 튜닝합니다.
+2. **대용량 데이터베이스 아키텍처**: 100만 MAU 환경에서도 성능 저하 없는 무한 스크롤 조회와 안정적인 백그라운드 처리를 위해 파티셔닝(Partitioning), 커서 페이징(Cursor Paging), 그리고 비관적 락(SKIP LOCKED)을 도입합니다.
 
-### 🎯 즉시 발송 시스템에서 커넥션 풀이 중요한 이유
+---
+
+## 🚀 아키텍처 개선 요약 (Architecture Summary)
+
+이번 과제에서 진행된 주요 개선 사항을 상위 그룹별로 분류하여 요약합니다.
+
+### 1. 고성능 통신 및 커넥션 아키텍처 (Connection & Resilience)
+* 외부 API 연동 시 발생할 수 있는 레이턴시 병목과 장애 전파를 차단하기 위한 통신 계층의 최적화입니다.
+* **HTTP 클라이언트 튜닝**: WebClient(Reactor Netty)를 싱글톤으로 관리하여 TCP 핸드셰이크 비용을 없애고, 커넥션 풀을 명시적으로 설정(`pendingAcquireTimeout=5초`)하여 외부 인프라 장애 시 45초간 대기하는 기본값의 함정을 해결했습니다.
+* **DB 커넥션 & 스레드 풀 정합성**: HikariCP 풀 사이즈를 "DB 물리 한계"에 맞추거나(10개), 트래픽 피크 시의 톰캣 스레드(200개)와 1:1로 맞추어 병목을 해소하는 양방향 접근을 시도했습니다.
+* **장애 대응 체계 강화**: HTTP 통신의 타임아웃을 4단계(connect, write, read, response)로 세분화하여 장애 원인을 명확히 하고, 커넥션 풀 상태를 Prometheus/Grafana로 실시간 모니터링합니다.
+
+### 2. 대규모 데이터베이스 처리 (Data Architecture & Partitioning)
+* 한 달에 수천만 건씩 누적되는 알림 데이터를 지연 없이 조회하고 안전하게 삭제하기 위한 DB 구조 개선입니다.
+* **파티셔닝 도입 (Range Partition)**: 알림 내역 테이블에 일 단위 파티셔닝을 적용하여, 오래된 데이터의 `DELETE` 부하를 `DROP PARTITION`으로 대체하고 핫 파티션을 분산했습니다.
+* **커서 기반 페이지네이션 (Cursor Paging)**: 기존 OFFSET 기반 페이징의 성능 저하(O(N))를 해결하기 위해, 인덱스를 직접 탐색(O(1))하는 커서 기반 무한 스크롤 조회 API를 구현했습니다.
+* **스토리지 및 인덱스 최적화**: 상태값(Status)을 2 Byte `SMALLINT`로 압축하고 가변 데이터를 `JSONB`로 전환하여 디스크 I/O를 최소화했습니다. 불필요한 인덱스를 제거하고 복합 인덱스 순서를 최적화하여 쓰기(Insert) 성능을 극대화했습니다.
+
+### 3. 동시성 제어 및 분산 큐잉 (Concurrency & Queueing)
+* 여러 인스턴스에서 스케줄러가 동시에 동작할 때 발생하는 충돌을 방지하고 병렬 처리량을 높이는 설계입니다.
+* **Outbox 큐잉 엔진 교체**: H2 데이터베이스의 한계를 극복하기 위해 `SKIP LOCKED` 락킹 메커니즘을 완벽히 지원하는 PostgreSQL로 교체하여 데드락 없는 병렬 알림 발송을 달성했습니다.
+* **ShedLock 도입**: 파티션 추가/삭제 등 중복 실행 시 치명적인 인프라 DDL 작업을 제어하기 위해 ShedLock을 도입하여 분산 환경에서의 스케줄러 단일 실행을 보장했습니다.
 
 ```mermaid
-flowchart LR
-    A[Kafka Consumer] -->|즉시| B[WebClient]
-    B -->|커넥션 풀에서 획득| C[TCP 커넥션]
-    C -->|HTTP 요청| D[SendMock API]
-    D -->|응답| C
-    C -->|반납| B
+flowchart TD
+    subgraph "1. Connection & Resilience"
+        A[Kafka Consumer] -->|Singleton WebClient| B(HTTP Connection Pool<br>Max 100, Timeout 5s)
+        B -->|4-Step Timeout| C[SendMock API]
+        B -.->|Fail-Fast| D[Circuit Breaker / Retry]
+    end
 
-    B -.->|풀 고갈 시| E[45초 대기 ❌]
-    E -.->|알림 지연| F[사용자 불만]
+    subgraph "3. Concurrency & Queueing"
+        E[Outbox Scheduler 1..N] -->|SELECT FOR UPDATE<br>SKIP LOCKED| F[(PostgreSQL Outbox)]
+        G[Partition Scheduler] -->|ShedLock<br>Single Execution| H[(PostgreSQL Main DB)]
+    end
+
+    subgraph "2. Data Architecture"
+        H -->|Range Partitioning| I[Daily Partitions]
+        H -->|Cursor Paging| J[O(1) Seek Performance]
+        H -->|Optimized Index| K[JSONB / SMALLINT]
+    end
+    
+    F -.-> A
 ```
 
-- **정상 흐름**: 풀에 여유 커넥션이 있으면 → 즉시 획득 → 즉시 발송 → 레이턴시 최소
-- **풀 고갈 시 (기본값)**: 45초간 커넥션 대기 → 알림이 45초 지연 → **"즉시 발송"이 아니게 됨**
-- **풀 고갈 시 (개선 후)**: 5초 내 빠른 실패 → 서킷 브레이커/Retry 토픽으로 넘겨서 재시도 → 다른 알림은 계속 처리
+---
 
 ## 📖 목차 (Table of Contents)
 
-**1. 클라이언트 및 DB 커넥션 아키텍처**
+**1. 고성능 통신 및 커넥션 아키텍처**
 - [1.1. HTTP 클라이언트(WebClient) 싱글톤 관리 및 커넥션 풀 재사용](#11-http-클라이언트webclient-싱글톤-관리-및-커넥션-풀-재사용)
 - [1.2. HTTP 커넥션 풀 명시적 설정 (ConnectionProvider 기본값의 함정)](#12-http-커넥션-풀-명시적-설정-connectionprovider-기본값의-함정)
 - [1.3. DB 커넥션 풀(HikariCP) 최적화 — 처리 능력(Throughput) 중심 설계](#13-db-커넥션-풀hikaricp-최적화--처리-능력throughput-중심-설계)
 - [1.4. DB 커넥션 풀 vs 톰캣 스레드 풀 정합성 조율](#14-db-커넥션-풀-vs-톰캣-스레드-풀-정합성-조율)
 
-**2. 타임아웃 및 장애 대응**
+**2. 장애 대응 및 관측성(Observability)**
 - [2.1. 타임아웃 4단계 세분화 전략 (HTTP)](#21-타임아웃-4단계-세분화-전략-http)
 - [2.2. 커넥션 풀 상태 모니터링 (Metrics + Grafana)](#22-커넥션-풀-상태-모니터링-metrics--grafana)
+- [2.3. HTTP 클라이언트 엔진 선택 (Reactor Netty)](#23-http-클라이언트-엔진-선택)
+- [2.4. 인프라 지표 및 성능 파악 가이드 (네트워크, 슬로우 쿼리, DB IO)](#24-인프라-지표-및-성능-파악-가이드-네트워크-슬로우-쿼리-db-io)
 
-**3. 기술 선택 및 관측성(Observability)**
-- [3.1. HTTP 클라이언트 엔진 선택 (Reactor Netty vs Apache HttpClient vs JDK HttpClient)](#31-http-클라이언트-엔진-선택)
-- [3.2. 인프라 지표 및 성능 파악 가이드 (네트워크, 슬로우 쿼리, DB I/O)](#32-인프라-지표-및-성능-파악-가이드-네트워크-슬로우-쿼리-db-io)
-
-## 🚀 진행 내용 요약 (Progress Summary)
-- **서비스 목적 기반 설계**: "즉시 발송"이라는 핵심 요구사항 하에, HTTP/DB 커넥션 풀 설정을 **"빠르게 처리하되, 지연되면 빠르게 포기(Fail-Fast)"** 전략으로 통일. 대기(Queueing)로 인한 앱 전체 마비를 방지.
-- **HTTP 커넥션 풀 튜닝**: Reactor Netty의 기본값(`pendingAcquireTimeout=45초`)의 함정을 분석하고, `ConnectionProvider.builder()`를 통해 5초 내 실패하도록 단축 및 1배치(100건) 동시 처리가 가능하게 풀 크기 조정.
-- **DB 커넥션 풀(HikariCP) 튜닝**: "풀 크기가 크다고 빠른 것이 아니다"라는 원칙 하에, HikariCP 공식(`CPU*2 + 1`)을 반영해 `maximum-pool-size=10`을 채택. 대신 `connection-timeout=3초`로 단축하여 데드락/슬로우 쿼리 발생 시 톰캣 스레드 풀 고갈을 방어.
-- **관측성(Observability) 가이드라인 확립**: 네트워크 레이턴시, DB I/O 사용률, 슬로우 쿼리를 식별하기 위한 Prometheus/Grafana 지표 수집 체계 정리.
+**3. 대규모 데이터베이스 아키텍처 (파티셔닝 및 최적화)**
+- [3.1. Outbox DB 엔진 교체: H2 -> PostgreSQL (SKIP LOCKED 이슈)](#31-outbox-db-엔진-교체-h2---postgresql-skip-locked-이슈)
+- [3.2. 알림 내역 조회 API 고도화 및 파티셔닝 전략](#32-알림-내역-조회-api-고도화-및-파티셔닝-전략)
+- [3.3. MySQL 파티셔닝 전략 비교 및 아키텍처 의사결정](#33-mysql-파티셔닝-전략-비교-및-아키텍처-의사결정)
+- [3.4. 다중 서버 환경에서의 파티션 자동화 (ShedLock)](#34-다중-서버-환경에서의-파티션-자동화-shedlock)
+- [3.5. MAU 100만 명 아키텍처를 위한 DB 자료형 최적화](#35-mau-100만-명-아키텍처를-위한-db-자료형-최적화)
+- [3.6. 대규모 알림 내역 조회를 위한 커서 기반 페이지네이션 설계](#36-대규모-알림-내역-조회를-위한-커서-기반-페이지네이션-설계)
+- [3.7. 100만 MAU 알림 시스템을 위한 인덱스 및 PK 아키텍처 설계](#37-100만-mau-알림-시스템을-위한-인덱스-및-pk-아키텍처-설계)
 
 ---
 
@@ -470,7 +502,7 @@ private val connectionProvider = ConnectionProvider.builder("mock-api")
 
 <br>
 
-## 3.1. HTTP 클라이언트 엔진 선택
+## 2.3. HTTP 클라이언트 엔진 선택
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - 슬라이드에서는 **Apache HttpClient를 깔아끼우고 명시 설정**을 하라고 권장하지만, 현재 프로젝트는 Spring WebFlux 기반의 리액티브 파이프라인을 사용 중.
@@ -503,7 +535,7 @@ private val connectionProvider = ConnectionProvider.builder("mock-api")
 
 <br>
 
-## 3.2. 인프라 지표 및 성능 파악 가이드 (네트워크, 슬로우 쿼리, DB I/O)
+## 2.4. 인프라 지표 및 성능 파악 가이드 (네트워크, 슬로우 쿼리, DB IO) (네트워크, 슬로우 쿼리, DB I/O)
 
 외부 시스템 연동 시 "문제가 어디서 발생했는가?"를 정확히 짚어내기 위한 관측(Observability) 방안을 정리합니다. 개발자가 작성한 코드가 DB의 I/O나 스레드에 미치는 영향을 데이터로 입증하기 위해 다음의 도구와 지표를 활용합니다.
 
@@ -574,7 +606,7 @@ private val connectionProvider = ConnectionProvider.builder("mock-api")
 
 ---
 
-## 4. Outbox DB 엔진 교체: H2 -> PostgreSQL (SKIP LOCKED 이슈)
+## 3.1. Outbox DB 엔진 교체: H2 -> PostgreSQL (SKIP LOCKED 이슈)
 
 #### ❓ 고민하게 된 구체적 문제 상황
 - **Outbox 패턴의 한계 봉착**: 대용량 알림 발송을 위해 100건씩 DB에서 이벤트를 긁어와(Polling) 카프카로 전송하는 스케줄러(`OutboxEventPublisher`)를 도입했습니다. 
@@ -617,7 +649,7 @@ fun findPendingEventsWithLock(@Param("status") status: EventStatus, @Param("limi
 
 ---
 
-## 5. 알림 내역 조회 API 고도화 및 파티셔닝 전략 (추가 설계 사항)
+## 3.2. 알림 내역 조회 API 고도화 및 파티셔닝 전략
 
 #### ❓ 요구사항 및 고민하게 된 배경
 - 알림 데이터는 휘발성이 강하면서도 무한정 누적되는 특징이 있습니다. "최근 7일만 보여줘도 데이터는 계속 누적"되며, 이로 인해 테이블 크기 증가, 인덱스 유지 비용 증가, 쿼리 성능 저하 등의 운영 문제가 발생합니다.
@@ -675,11 +707,11 @@ DROP TABLE alarms_20260617;
 
 ---
 
-## 6. MySQL 파티셔닝 전략 비교 및 아키텍처 의사결정
+## 3.3. MySQL 파티셔닝 전략 비교 및 아키텍처 의사결정
 
 알림 시스템의 파티셔닝을 설계하면서 MySQL이 제공하는 4가지 주요 파티셔닝 기법(Range, List, Hash, Key)을 비교하고, 시스템 특성에 맞는 최적의 전략을 도출했습니다.
 
-### 6.1. 파티셔닝 전략별 구체적 실무 활용 사례
+### 3.3.1. 파티셔닝 전략별 구체적 실무 활용 사례
 
 MySQL 파티셔닝의 4가지 방식과 핫 파티션을 방어하기 위한 복합(Composite) 파티셔닝이 실무에서 어떻게 쓰이는지 구체적인 사례로 정리했습니다.
 
@@ -714,7 +746,7 @@ MySQL 파티셔닝의 4가지 방식과 핫 파티션을 방어하기 위한 복
   - 오늘 결제되는 데이터가 오늘 날짜 파티션 안에서도 4개의 물리 공간으로 쪼개져 분산 저장됩니다. 
   - 조회 이점: "오늘 특정 유저의 결제 내역"을 찾을 때 오늘 파티션 내부의 특정 해시 구역만 콕 집어 검색하므로 성능이 가장 극대화됩니다.
 
-### 6.2. 최종 선택: 일 단위(Daily) Range Partitioning
+### 3.3.2. 최종 선택: 일 단위(Daily) Range Partitioning
 
 **"`created_at`(생성일자) 기준의 Range Partitioning"**을 최종 채택했습니다.
 
@@ -752,7 +784,7 @@ ALTER TABLE alarms REORGANIZE PARTITION p_max INTO (
 );
 ```
 
-### 6.3. 포기한 것 (Trade-offs & 한계점)
+### 3.3.3. 포기한 것 (Trade-offs & 한계점)
 
 - **Hash / Key 파티셔닝 포기**: 트래픽 분산에는 탁월하지만, 과거 데이터 삭제 시 전체 파티션을 뒤져야 하므로 "보관 주기가 지난 데이터의 가벼운 삭제"라는 핵심 요구사항과 맞지 않아 포기했습니다.
 - **MySQL PK 제약조건 감수**: MySQL 파티셔닝은 **파티셔닝 기준 컬럼(`created_at`)이 반드시 Primary Key에 포함**되어야 합니다. 따라서 기존 `(id)` 단일 PK 구조에서 `(id, created_at)` 복합 PK 구조를 강제받게 됩니다.
@@ -762,7 +794,7 @@ ALTER TABLE alarms REORGANIZE PARTITION p_max INTO (
 ---
 
 
-### 6.4. 다중 서버 환경에서의 파티션 자동화 (ShedLock)
+## 3.4. 다중 서버 환경에서의 파티션 자동화 (ShedLock)
 
 파티션 관리(오래된 파티션 DROP 및 신규 파티션 ADD)는 무조건 비동기적인 배치(Batch) 작업으로 자동화되어야 합니다. (Trigger 사용은 절대 금지)
 
@@ -785,11 +817,11 @@ ALTER TABLE alarms REORGANIZE PARTITION p_max INTO (
   애플리케이션이 뜨는 즉시 `information_schema.PARTITIONS` 메타데이터를 조회하여, "오늘"과 "내일" 자 파티션의 물리적 존재 여부를 검증합니다.
 - **동적 할당**: 만약 파티션이 존재하지 않는다면, 그 즉시 스케줄러와 동일한 로직(`REORGANIZE PARTITION`)을 실행하여 파티션을 안전하게 할당한 뒤 정상 기동 상태(Traffic 활성화)로 진입합니다. 이를 통해 **인프라 환경 변화나 배포 시점에도 완벽한 무장애 시스템**을 달성합니다.
 
-## 7. MAU 100만 명 아키텍처를 위한 DB 자료형 최적화
+## 3.5. MAU 100만 명 아키텍처를 위한 DB 자료형 최적화
 
 트래픽이 폭증하고 데이터가 1억 건 단위로 쌓이는 환경(MAU 100만 명)에서는 **단 1Byte의 낭비조차 치명적인 디스크 I/O와 인덱스 탐색 속도 저하**로 이어집니다. 본 시스템은 이를 대비하여 극한의 효율을 낼 수 있도록 Entity 및 DB 자료형 매핑을 다음과 같이 고도화했습니다.
 
-### 7.1. Status 컬럼 압축 (VARCHAR -> SMALLINT)
+### 3.5.1. Status 컬럼 압축 (VARCHAR -> SMALLINT)
 기존에 `SENT`, `FAILED` 와 같이 문자열로 저장되던 알림 상태(Status) 필드를 물리적 DB에는 **정수형(2 Byte)**으로 저장되도록 최적화했습니다.
 
 - **문제점**: `VARCHAR`로 상태를 저장하면 각 레코드당 약 8~10 Byte가 소모되며, 한 달에 9,000만 건 적재 시 해당 컬럼에만 약 800MB 이상의 용량이 소비됩니다.
@@ -806,7 +838,7 @@ class AlarmStatusConverter : AttributeConverter<AlarmStatus, Short> {
 ```
 
 
-### 7.2. Payload 컬럼 구조화 (TEXT -> JSONB)
+### 3.5.2. Payload 컬럼 구조화 (TEXT -> JSONB)
 가변적인 메타데이터가 담기는 `payload` 필드를 단순 문자열에서 PostgreSQL 네이티브의 **JSONB** 포맷으로 전환했습니다.
 
 - **문제점**: `TEXT`로 저장하면 내부 데이터를 기준으로 검색("쿠폰 알림만 통계 도출" 등)해야 할 때, 전체 테이블을 풀 스캔하며 파싱해야 하므로 시스템 장애를 유발합니다.
@@ -826,7 +858,7 @@ val payload: String?,
 
 ---
 
-## 8. 대규모 알림 내역 조회를 위한 커서 기반 페이지네이션 설계
+## 3.6. 대규모 알림 내역 조회를 위한 커서 기반 페이지네이션 설계
 
 #### ❓ 고민하게 된 구체적 배경
 - **100만 MAU 시대의 데이터 누적량**: 알림 시스템 특성상 사용자가 활동할 때마다 수십~수백 건의 알림이 발생합니다. 매일 수백만 건, 한 달이면 수천만 건의 데이터가 `alarms` 테이블에 차곡차곡 누적됩니다.
@@ -863,14 +895,14 @@ val payload: String?,
 
 ---
 
-## 9. 100만 MAU 알림 시스템을 위한 인덱스 및 PK 아키텍처 설계
+## 3.7. 100만 MAU 알림 시스템을 위한 인덱스 및 PK 아키텍처 설계
 
 #### ❓ 고민하게 된 구체적 배경
 알림 시스템은 초당 수천 건의 INSERT가 발생하는 **극단적인 쓰기(Write) 위주의 도메인**입니다. "데이터를 삽입할 때마다 인덱스(B-Tree)도 함께 업데이트되어야 하므로 쓰기 성능이 저하된다"는 트레이드오프를 바탕으로, 최소한의 필수 인덱스만 설계하는 전략이 필요했습니다.
 
 ---
 
-### 9.1. 내부/외부 식별자(PK) 통합 전략: Snowflake (BIGINT)
+### 3.7.1. 내부/외부 식별자(PK) 통합 전략: Snowflake (BIGINT)
 
 분산 환경에서 PK를 고를 때, 많이 쓰이는 "내부 Auto-Increment + 외부 UUID" 전략 대신 **단일 Snowflake(BIGINT)**를 선택했습니다.
 
@@ -893,7 +925,7 @@ val alarmId: Long  // 기존 String(VARCHAR)에서 Long(BIGINT)으로 교정 완
 
 ---
 
-### 9.2. 읽기(Read) vs 쓰기(Write)의 트레이드오프와 인덱스 최소화
+### 3.7.2. 읽기(Read) vs 쓰기(Write)의 트레이드오프와 인덱스 최소화
 
 #### ❓ 문제 인식
 일반적으로 검색 편의성을 위해 다양한 컬럼에 인덱스를 걸지만, 초당 수천 건이 INSERT되는 알림 테이블(`alarms`)에 인덱스가 많으면 B-Tree 재정렬 오버헤드로 인해 메인 DB가 마비될 수 있습니다.
@@ -922,7 +954,7 @@ class AlarmEntity( ... )
 
 ---
 
-### 9.3. 아웃박스(Outbox) 폴링 스케줄러를 위한 복합 인덱스 설계
+### 3.7.3. 아웃박스(Outbox) 폴링 스케줄러를 위한 복합 인덱스 설계
 
 알림 발송 보장을 위해 1초마다 도는 스케줄러 쿼리(`SELECT ... WHERE status = 'PENDING' AND next_retry_at <= ?`)의 테이블 풀 스캔을 방지하기 위한 설계입니다.
 
@@ -945,7 +977,7 @@ class AlarmEntity( ... )
 
 ---
 
-### 9.4. 핵심 쿼리 실행계획(EXPLAIN) 시뮬레이션 검증 결과
+### 3.7.4. 핵심 쿼리 실행계획(EXPLAIN) 시뮬레이션 검증 결과
 
 실제 데이터베이스(MySQL 기준) 옵티마이저가 우리가 설계한 인덱스를 어떻게 타는지 검증한 실행계획 결과입니다. DBA 관점에서 시스템의 안정성을 보장하는 핵심 지표입니다.
 

@@ -59,45 +59,67 @@ graph TD
 
 ## 📖 목차 (Table of Contents)
 
+### 📌 1주차 과제: 기본 아키텍처 및 시스템 설계
 **1. 아키텍처 및 시스템 설계**
 - [1.1. 코드 아키텍처 선택 (헥사고날 vs 레이어드)](#11-코드-아키텍처-선택-헥사고날-vs-레이어드)
 - [1.2. 발송 채널 확장성 패턴 (전략 + 팩토리)](#12-발송-채널-확장성-패턴-전략--팩토리)
 - [1.3. 도메인 모델링 방식 (풍부한 도메인 vs 빈약한 도메인)](#13-도메인-모델링-방식-풍부한-도메인-vs-빈약한-도메인)
 - [1.4. 객체 생성 방식 (기본 생성자 vs 정적 팩토리 메서드)](#14-객체-생성-방식-기본-생성자-vs-정적-팩토리-메서드)
 
-**2. 데이터베이스 및 식별자 아키텍처**
-- [2.1. PK 최적화: UUIDv7 및 정수형 식별자 도입 (1차)](#21-pk-최적화-uuidv7-및-정수형-식별자-도입-1차)
-- [2.2. PK 단일화: Snowflake ID와 해시 기반 멱등성 키 설계 (최종)](#22-pk-단일화-snowflake-id와-해시-기반-멱등성-키-설계-최종)
+---
+
+### [📌 2주차 과제: 아키텍처 및 동시성 제어 의사결정](README_2주차과제.md)
+**1. 데이터베이스 및 식별자 아키텍처**
+- [1.1. PK 최적화: UUIDv7 및 정수형 식별자 도입 (1차)](README_2주차과제.md#11-pk-최적화-uuidv7-및-정수형-식별자-도입-1차)
+- [1.2. PK 단일화: Snowflake ID와 해시 기반 멱등성 키 설계 (최종)](README_2주차과제.md#12-pk-단일화-snowflake-id와-해시-기반-멱등성-키-설계-최종)
+
+**2. 동시성 제어 및 멱등성 설계**
+- [2.1. Outbox 스케줄러 동시성 제어 (멀티 인스턴스 환경)](README_2주차과제.md#21-outbox-스케줄러-동시성-제어-멀티-인스턴스-환경)
+- [2.2. Consumer 멱등성 방어선 구축 (Redis & DB DCL)](README_2주차과제.md#22-consumer-멱등성-방어선-구축-redis--db-dcl)
+- [2.3. Producer(API) 멱등성 보장 및 DB 장애 격리](README_2주차과제.md#23-producerapi-멱등성-보장-및-db-장애-격리)
 
 **3. 비동기 메시징 및 성능 최적화**
-- [3.1. 즉시 발송 아키텍처 설계 (API 접수와 실제 처리의 분리)](#31-즉시-발송-아키텍처-설계-api-접수와-실제-처리의-분리)
-- [3.2. 메시지 영속성 저장 매체 선택 (Redis vs Kafka)](#32-메시지-영속성-저장-매체-선택-redis-vs-kafka)
-- [3.3. Kafka 브로커 메시지 유실 및 중복 저장 방지](#33-kafka-브로커-메시지-유실-및-중복-저장-방지)
-- [3.4. 카프카 비동기 분산 시 핫파티션 회피 파티션 키 설계](#34-카프카-비동기-분산-시-핫파티션-회피-파티션-키-설계)
-- [3.5. Kafka 기반 비동기 파이프라인 및 DLQ 구축](#35-kafka-기반-비동기-파이프라인-및-dlq-구축)
-- [3.6. Non-blocking 리액티브 파이프라인 도입 (WebClient)](#36-non-blocking-리액티브-파이프라인-도입-webclient)
-- [3.7. 동기식 DB 접근(JPA/JDBC)의 블로킹 스레드 격리](#37-동기식-db-접근jpajdbc의-블로킹-스레드-격리)
-- [3.8. 외부 연동 API 서버 보호를 위한 전송 빈도 조율 (Rate Limiting)](#38-외부-연동-api-서버-보호를-위한-전송-빈도-조율-rate-limiting)
+- [3.1. Kafka 기반 비동기 파이프라인 및 DLQ 구축](README_2주차과제.md#31-kafka-기반-비동기-파이프라인-및-dlq-구축)
+- [3.2. Non-blocking 리액티브 파이프라인 도입 (WebClient)](README_2주차과제.md#32-non-blocking-리액티브-파이프라인-도입-webclient)
+- [3.3. 동기식 DB 접근(JPA/JDBC)의 블로킹 스레드 격리](README_2주차과제.md#33-동기식-db-접근jpajdbc의-블로킹-스레드-격리)
 
-**4. 동시성 제어 및 멱등성 설계**
-- [4.1. 클라이언트 중복 요청 방지 검증 기술 (Redis vs RDB)](#41-클라이언트-중복-요청-방지-검증-기술-redis-vs-rdb)
-- [4.2. Producer(API) 멱등성 보장 및 DB 장애 격리](#42-producerapi-멱등성-보장-및-db-장애-격리)
-- [4.3. 동시성 및 중복 제어 엔진 선택 (Redis 분산 락 vs Kafka 큐)](#43-동시성-및-중복-제어-엔진-선택-redis-분산-락-vs-kafka-큐)
-- [4.4. 공통 자원 제어 패턴 (AOP 프록시 vs 템플릿/콜백)](#44-공통-자원-제어-패턴-aop-프록시-vs-템플릿콜백)
-- [4.5. 카프카 최소 1회 전송에 따른 중복 소비 극복 전략](#45-카프카-최소-1회-전송에-따른-중복-소비-극복-전략)
-- [4.6. Consumer 멱등성 방어선 구축 (Redis & DB DCL)](#46-consumer-멱등성-방어선-구축-redis--db-dcl)
-- [4.7. Outbox 스케줄러 동시성 제어 (멀티 인스턴스 환경)](#47-outbox-스케줄러-동시성-제어-멀티-인스턴스-환경)
+**4. 데이터 정합성 및 상태 파이프라인**
+- [4.1. 알람 전송 생명주기 상태 세분화 (Client -> Kafka -> Redis)](README_2주차과제.md#41-알람-전송-생명주기-상태-세분화-client---kafka---redis)
+- [4.2. Outbox 장애 복구를 위한 재시도(Retry) 및 동기화 전략](README_2주차과제.md#42-outbox-장애-복구를-위한-재시도retry-및-동기화-전략)
 
-**5. 데이터 정합성 및 상태 파이프라인**
-- [5.1. 알람 전송 생명주기 상태 세분화 (Client -> Kafka -> Redis)](#51-알람-전송-생명주기-상태-세분화-client---kafka---redis)
-- [5.2. 알람 저장과 Kafka 발행의 원자성 보장 (Outbox Pattern)](#52-알람-저장과-kafka-발행의-원자성-보장-outbox-pattern)
-- [5.3. Outbox 장애 복구를 위한 재시도(Retry) 및 동기화 전략](#53-outbox-장애-복구를-위한-재시도retry-및-동기화-전략)
-- [5.4. 외부 에러(429/5xx) 복구 및 사후 실패 처리](#54-외부-에러4295xx-복구-및-사후-실패-처리)
+**5. 운영 및 모니터링 체계**
+- [5.1. 분산 환경 추적성을 위한 MDC 및 JSON 로깅 아키텍처](README_2주차과제.md#51-분산-환경-추적성을-위한-mdc-및-json-로깅-아키텍처)
+- [5.2. 인프라 및 아키텍처 보완 (Kafka 클러스터링, Rate Limiter 등)](README_2주차과제.md#52-인프라-및-아키텍처-보완-kafka-클러스터링-rate-limiter-등)
 
-**6. 운영 및 모니터링 체계**
-- [6.1. 분산 환경 추적성을 위한 MDC 및 JSON 로깅 아키텍처](#61-분산-환경-추적성을-위한-mdc-및-json-로깅-아키텍처)
-- [6.2. 시퀀스 다이어그램 요약](#62-시퀀스-다이어그램-요약)
+---
 
+### [📌 3주차 과제: 대규모 알림 시스템의 커넥션 최적화 및 파티셔닝 아키텍처 의사결정](README_3주차과제.md)
+**1. 고성능 통신 및 커넥션 아키텍처**
+- [1.1. HTTP 클라이언트(WebClient) 싱글톤 관리 및 커넥션 풀 재사용](README_3주차과제.md#11-http-클라이언트webclient-싱글톤-관리-및-커넥션-풀-재사용)
+- [1.2. HTTP 커넥션 풀 명시적 설정 (ConnectionProvider 기본값의 함정)](README_3주차과제.md#12-http-커넥션-풀-명시적-설정-connectionprovider-기본값의-함정)
+- [1.3. DB 커넥션 풀(HikariCP) 최적화 — 처리 능력(Throughput) 중심 설계](README_3주차과제.md#13-db-커넥션-풀hikaricp-최적화--처리-능력throughput-중심-설계)
+- [1.4. DB 커넥션 풀 vs 톰캣 스레드 풀 정합성 조율](README_3주차과제.md#14-db-커넥션-풀-vs-톰캣-스레드-풀-정합성-조율)
+
+**2. 장애 대응 및 관측성(Observability)**
+- [2.1. 타임아웃 4단계 세분화 전략 (HTTP)](README_3주차과제.md#21-타임아웃-4단계-세분화-전략-http)
+- [2.2. 커넥션 풀 상태 모니터링 (Metrics + Grafana)](README_3주차과제.md#22-커넥션-풀-상태-모니터링-metrics--grafana)
+- [2.3. HTTP 클라이언트 엔진 선택 (Reactor Netty)](README_3주차과제.md#23-http-클라이언트-엔진-선택)
+- [2.4. 인프라 지표 및 성능 파악 가이드 (네트워크, 슬로우 쿼리, DB IO)](README_3주차과제.md#24-인프라-지표-및-성능-파악-가이드-네트워크-슬로우-쿼리-db-io)
+
+**3. 대규모 데이터베이스 아키텍처 (파티셔닝 및 최적화)**
+- [3.1. Outbox DB 엔진 교체: H2 -> PostgreSQL (SKIP LOCKED 이슈)](README_3주차과제.md#31-outbox-db-엔진-교체-h2---postgresql-skip-locked-이슈)
+- [3.2. 알림 내역 조회 API 고도화 및 파티셔닝 전략](README_3주차과제.md#32-알림-내역-조회-api-고도화-및-파티셔닝-전략)
+- [3.3. MySQL 파티셔닝 전략 비교 및 아키텍처 의사결정](README_3주차과제.md#33-mysql-파티셔닝-전략-비교-및-아키텍처-의사결정)
+- [3.4. 다중 서버 환경에서의 파티션 자동화 (ShedLock)](README_3주차과제.md#34-다중-서버-환경에서의-파티션-자동화-shedlock)
+- [3.5. MAU 100만 명 아키텍처를 위한 DB 자료형 최적화](README_3주차과제.md#35-mau-100만-명-아키텍처를-위한-db-자료형-최적화)
+- [3.6. 대규모 알림 내역 조회를 위한 커서 기반 페이지네이션 설계](README_3주차과제.md#36-대규모-알림-내역-조회를-위한-커서-기반-페이지네이션-설계)
+- [3.7. 100만 MAU 알림 시스템을 위한 인덱스 및 PK 아키텍처 설계](README_3주차과제.md#37-100만-mau-알림-시스템을-위한-인덱스-및-pk-아키텍처-설계)
+
+---
+
+---
+
+### 📌 부록: 실행 가이드
 **7. 실행 가이드**
 - [7.1. 로컬 실행 방법](#71-로컬-실행-방법)
 
@@ -457,7 +479,7 @@ WHERE status = 'PENDING' FOR UPDATE SKIP LOCKED;
 
 ### 6.2. 시퀀스 다이어그램 요약
 
-#### 알림 접수부터 전송까지의 성공/재시도 흐름
+#### 알림 접수부터 전송까지의 성공/재시도/서킷 브레이커 흐름
 ```mermaid
 sequenceDiagram
     autonumber
@@ -467,6 +489,7 @@ sequenceDiagram
     participant Kafka as Kafka Broker
     participant Worker as Kafka Consumer
     participant Redis as Redis
+    participant CB as Circuit Breaker (Resilience4j)
     participant Ext as External API
 
     Client->>+API: POST /notifications
@@ -485,19 +508,32 @@ sequenceDiagram
     Worker->>DB: 상태 확인 (Double Checked Lock)
     Worker->>DB: status = SENDING
     
-    Worker->>+Ext: POST WebHook
-    Ext-->>-Worker: 5xx Error
-    Worker->>Worker: 지수 백오프 재시도 (최대 3회)
-    Worker->>Ext: Retry
-    Ext-->>Worker: 200 OK
+    Worker->>+CB: 외부 API 호출 요청
+    
+    alt Circuit Breaker is OPEN (장애 상태)
+        CB-->>Worker: 빠른 실패 (CircuitBreakerOpenException)
+        Worker->>DB: status = RETRY_WAIT (또는 DEAD)
+        Worker->>Redis: DEL proc:uuid
+        Worker-->>Kafka: NACK / Retry Topic 라우팅
+    else Circuit Breaker is CLOSED/HALF_OPEN (정상 상태)
+        CB->>+Ext: POST WebHook
+        Ext-->>-CB: 5xx Error / Timeout
+        CB-->>Worker: Error 반환
+        Worker->>Worker: 지수 백오프 재시도 (최대 3회)
+        Worker->>+CB: Retry
+        CB->>+Ext: POST WebHook
+        Ext-->>-CB: 200 OK
+        CB-->>-Worker: Success
 
-    Worker->>DB: status = SENT
-    Worker->>Redis: DEL proc:uuid
-    Worker-->>-Kafka: ack.acknowledge()
+        Worker->>DB: status = SENT
+        Worker->>Redis: DEL proc:uuid
+        Worker-->>-Kafka: ack.acknowledge()
+    end
 ```
 
-### 6.3. 한계 및 추후 개선 사항
-- **서킷 브레이커 도입**: 외부 서비스 장애 지속 시 시스템 보호를 위해 Resilience4j 서킷 브레이커를 결합해 빠른 실패(Fail Fast) 및 자원 고갈 방지 필요.
+### 6.3. 서킷 브레이커(Circuit Breaker) 도입 완료
+- **빠른 실패(Fail Fast) 및 자원 보호**: 외부 API 서비스의 장애 지속 시 계속된 타임아웃 대기로 인한 커넥션 스레드 고갈을 막기 위해 Resilience4j 서킷 브레이커를 도입했습니다.
+- **Fail-Fast 처리**: 서킷 브레이커가 OPEN 상태일 때는 외부 API를 호출하지 않고 즉시 `CircuitBreakerOpenException`을 발생시켜 불필요한 네트워크 대기 시간을 줄이고 빠른 처리를 유도합니다.
 
 ---
 
