@@ -13,7 +13,12 @@ import java.time.LocalDateTime
  *        도메인과 DB 간 상호 매핑(reconstruct/fromDomain) 변환 로직을 가집니다.
  */
 @Entity
-@Table(name = "alarm_outbox_events")
+@Table(
+    name = "alarm_outbox_events",
+    indexes = [
+        Index(name = "idx_outbox_status_retry", columnList = "status, next_retry_at")
+    ]
+)
 class AlarmOutboxEventEntity(
     @Id
     val id: Long,

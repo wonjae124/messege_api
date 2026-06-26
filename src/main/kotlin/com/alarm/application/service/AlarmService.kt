@@ -18,6 +18,8 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Duration
+import com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse
+import java.time.LocalDateTime
 
 /**
  * [파일명] AlarmService.kt
@@ -100,13 +102,13 @@ class AlarmService(
     override fun getAlarmHistory(
         senderId: String?,
         receiverId: String?,
-        status: com.alarm.domain.AlarmStatus?,
-        cursorCreatedAt: java.time.LocalDateTime?,
+        status: AlarmStatus?,
+        cursorCreatedAt: LocalDateTime?,
         cursorId: Long?,
         limit: Int
-    ): com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse {
-        val cutoffDate = java.time.LocalDateTime.now().minusDays(7)
-        // limit + 1개를 조회하여 hasNext 여부를 확인합니다.
+    ): AlarmHistoryResponse {
+        val cutoffDate = LocalDateTime.now().minusDays(7)
+            // limit + 1개를 조회하여 hasNext 여부를 확인합니다.
         val alarms = alarmRepositoryPort.findHistoryByCursor(
             senderId, receiverId, status, cutoffDate, cursorCreatedAt, cursorId, limit + 1
         )

@@ -11,10 +11,11 @@ import java.time.LocalDateTime
  * [관점] Inbound Adapter DTO: HTTP 요청 바디 파싱 및 응답 데이터 형식을 규격화하며 도메인 엔티티를 클라이언트 스펙에 맞춰 매핑합니다.
  */
 data class AlarmCreateRequest(
-    val name: String,
-    val payload: String? = null,
+    val senderId: String? = null,
     val receiverId: String? = null,
-    val channelType: String? = null
+    val channelType: String? = null,
+    val name: String,
+    val payload: String? = null
 )
 
 data class AlarmUpdateRequest(

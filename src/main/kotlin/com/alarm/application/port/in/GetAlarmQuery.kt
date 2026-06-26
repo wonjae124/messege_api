@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable
 
 import com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse
 import java.time.LocalDateTime
+import com.alarm.domain.AlarmStatus
 
 /**
  * [파일명] GetAlarmQuery.kt
@@ -19,7 +20,7 @@ interface GetAlarmQuery {
     fun getAlarmHistory(
         senderId: String?,
         receiverId: String?,
-        status: com.alarm.domain.AlarmStatus?,
+        status: AlarmStatus?,
         cursorCreatedAt: LocalDateTime?,
         cursorId: Long?,
         limit: Int
