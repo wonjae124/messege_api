@@ -1,0 +1,141 @@
+spring:
+  application:
+    name: alarm
+  
+  # 데이터베이스 연결 설정 (JPA/JDBC)
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/alarmdb}
+    driver-class-name: ${DB_DRIVER:org.postgresql.Driver}
+    username: ${DB_USERNAME:alarmuser}
+    password: ${DB_PASSWORD:alarmpass}
+    hikari:
+      pool-name: AlarmDBPool                   # 모니터링 시 풀 이름 식별용
+      maximum-pool-size: ${HIKARI_MAX_POOL:10} # 공식 (CPU 코어 * 2) + SSD(1). 무조건 늘리면 컨텍스트 스위칭/락 경합 부하 발생
+      minimum-idle: ${HIKARI_MIN_IDLE:5}       # 유지할 최소 유휴 커넥션 개수
+      connection-timeout: 3000                 # [Fail-Fast] 풀에서 커넥션 획득 대기 시간 (3초). 기본 30초는 너무 길어 앱 전체 블로킹 위험
+      max-lifetime: 1800000                    # (30분) DB의 wait_timeout보다 짧게 설정하여 좀비 커넥션 반환 방지
+      idle-timeout: 600000                     # (10분) 유휴 커넥션 정리 시간
+  
+  # JPA (Hibernate) 설정
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: update                         # 애플리케이션 시작 시 엔티티 기반 스키마 자동 갱신
+    show-sql: false                            # 콘솔에 SQL 로그 출력 여부
+    properties:
+      hibernate:
+        connection:
+          isolation: 2  # 트랜잭션 격리 수준 (2: READ_COMMITTED)
+  
+  # Kafka 연동 설정
+  kafka:
+    # Customizable Kafka deployment parameters (defaults for development)
+    broker:
+      replicas: 3              # Number of Kafka broker containers (docker‑compose replica count)
+    topic:
+      replication-factor: 1    # Number of replicas for each topic (must be <= broker replicas)
+      partitions: 6            # Number of partitions per topic
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092} # 카프카 브로커 주소
+    consumer:
+      concurrency: 6           # Number of consumer threads per listener container
+      group-id: alarm_api_consumer_group       # 알람 컨슈머 그룹 ID
+      auto-offset-reset: earliest              # 초기 오프셋이 없을 때 가장 처음부터 읽기
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        interceptor.classes: com.alarm.config.KafkaRequestIdInterceptor # 분산 추적(MDC)을 위한 인터셉터
+    listener:
+      async-acks: true         # Future<?> 반환 타입에 대한 비동기 ack 활성화
+  
+  # Redis 연동 설정 (분산 락, 속도 제한 등에 사용)
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+# 외부 연동 API (Mock API) 설정
+mock:
+  api:
+    url: ${MOCK_API_URL:http://localhost:8081} # 대상 외부 API 주소 (도커: MOCK_API_URL=http://sendmock:8081)
+    timeout:
+      connect-millis: 5000     # 커넥션 연결 타임아웃 (밀리초), 소켓 연결
+      response-seconds: 6      # 전체 HTTP 응답 대기 타임아웃 (초), 요청‑응답 흐름(연결 + 쓰기 + 읽기 포함)에 대한 상한 시간
+      write-seconds: 2         # 쓰기 타임아웃 (초), 클라이언트 => 서버, 요청 본문을 보내는 시간
+                               #   - POST /api/orders 로 5MB JSON을 전송하는데 4초가 걸리면 정상, 6초가 걸리면 예외 발생
+                               #   - 짧게 잡으면 전송 실패를 빠르게 감지하고 재시도하거나 차단
+      read-seconds: 5          # 읽기 타임아웃 (초), 서버 => 클라이언트, 응답 본문을 받는 시간
+                               #   - GET /api/status 로 호출했을 때 서버가 2초 뒤에 응답을 시작했지만, 전체 바디를 4초 안에 다 읽지 못하면 예외 발생
+                               #   - 짧게 잡으면 서버 지연을 빠르게 감지해 서비스 레이턴시를 제어
+    retry:
+      max-attempts: 3            # 최대 재시도 횟수
+      min-backoff-seconds: 1     # 지수 백오프 초기 대기 시간 (초)
+      max-backoff-seconds: 10    # 지수 백오프 최대 대기 시간 상한 (초)
+      jitter: 0.3                # 재시도 시점 분산 비율 (0.0~1.0), 0.3 = ±30%
+    http-pool:
+      max-connections: ${MOCK_API_POOL_MAX_CONNECTIONS:100}           # [HTTP 커넥션 풀] 동일 목적지(host:port)에 동시에 열 수 있는 최대 커넥션 수
+      pending-acquire-timeout-seconds: ${MOCK_API_POOL_ACQUIRE_TIMEOUT:5}  # [HTTP 커넥션 풀] 풀에서 커넥션을 빌리기까지 최대 대기 시간 (초), 기본 45초 → 5초로 단축하여 풀 고갈 시 빠른 실패
+      max-idle-time-seconds: ${MOCK_API_POOL_MAX_IDLE:30}            # [HTTP 커넥션 풀] 유휴 커넥션 유지 시간 (초), 서버가 먼저 끊은 stale connection 방지
+      max-life-time-seconds: ${MOCK_API_POOL_MAX_LIFE:300}           # [HTTP 커넥션 풀] 커넥션 최대 수명 (초, 5분), DNS 변경 반영 및 오래된 커넥션 교체
+      evict-interval-seconds: ${MOCK_API_POOL_EVICT_INTERVAL:60}    # [HTTP 커넥션 풀] 백그라운드 커넥션 정리 주기 (초)
+      metrics-enabled: ${MOCK_API_POOL_METRICS:true}                 # [HTTP 커넥션 풀] 커넥션 풀 메트릭 수집 (Prometheus/Grafana 노출)
+
+# 모니터링 및 Actuator 설정
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics # 노출할 엔드포인트 목록
+  metrics:
+    export:
+      prometheus:
+        enabled: true          # 프로메테우스 메트릭 수집 허용
+    tags:
+      application: alarm-api   # 메트릭 식별용 태그
+  tracing:
+    sampling:
+      probability: 0.1         # 분산 추적 샘플링 비율 (0.1 = 10% 수집, 부하테스트 시 부하 절감을 위함)
+
+# OpenTelemetry 분산 추적 데이터 전송 대상
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+
+# 알람 애플리케이션 전용 비즈니스 로직 제어 파라미터
+alarm:
+  outbox:
+    batch-size: 1000            # 스케줄러 1회 동작 시 폴링하여 처리할 PENDING 이벤트 최대 개수
+  
+  rate-limiter:
+    capacity: 500              # Token Bucket 알고리즘: 담아둘 수 있는 최대 호출 횟수
+    refill-rate: 500           # 1주기 동안 채워질 토큰(호출 권한) 개수
+    refill-period-seconds: 1   # 리필 주기 (기본: 1초마다 500개씩 리필)
+  
+  circuit-breaker:
+    failure-rate-threshold: 50
+    sliding-window-size: 100
+    sliding-window-type: COUNT_BASED
+    minimum-number-of-calls: 50
+    permitted-number-of-calls-in-half-open-state: 10
+    wait-duration-in-open-state: 30s
+    automatic-transition-from-open-to-half-open-enabled: true
+    slow-call-duration-threshold: 5s
+    slow-call-rate-threshold: 50
+
+
+# --- Performance Test Specific Settings ---
+logging:
+  level:
+    root: WARN
+    com.alarm: INFO
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
+    org.apache.kafka: WARN
+
+server:
+  tomcat:
+    threads:
+      max: 200

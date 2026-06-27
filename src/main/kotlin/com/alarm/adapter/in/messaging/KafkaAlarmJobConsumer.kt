@@ -9,6 +9,7 @@ import com.alarm.domain.AlarmExecutionLog
 import com.alarm.domain.AlarmStatus
 import com.alarm.exception.ExternalApiException
 import com.alarm.exception.AlarmNotFoundException
+import com.alarm.exception.CircuitBreakerOpenException
 import com.alarm.exception.ConcurrentProcessingException
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
@@ -16,6 +17,7 @@ import org.slf4j.MDC
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.kafka.annotation.KafkaListener
 import org.springframework.kafka.retrytopic.RetryTopicHeaders
+import org.springframework.kafka.support.KafkaHeaders
 import org.springframework.messaging.handler.annotation.Header
 import org.springframework.stereotype.Component
 import java.time.Duration
@@ -72,13 +74,17 @@ class KafkaAlarmJobConsumer(
     @KafkaListener(
         topics = ["alarm-jobs"],
         groupId = "\${spring.kafka.consumer.group-id:alarm_api_consumer_group}",
-        concurrency = "3"
+        concurrency = "\${spring.kafka.consumer.concurrency:3}"
     )
     fun consumeAlarmJob(
         payloadStr: String,
-        @Header(name = RetryTopicHeaders.DEFAULT_HEADER_ATTEMPTS, required = false) attempts: Int?
+        @Header(name = RetryTopicHeaders.DEFAULT_HEADER_ATTEMPTS, required = false) attempts: Int?,
+        @Header(KafkaHeaders.RECEIVED_PARTITION) partition: Int = 0,
+        @Header(KafkaHeaders.OFFSET) offset: Long = 0,
+        @Header(KafkaHeaders.RECEIVED_KEY) key: String? = null
     ): CompletableFuture<Void?> {
         val attempt = attempts ?: 1
+        logger.info("Kafka message received - key={}, partition={}, offset={}, attempt={}", key, partition, offset, attempt)
         logger.info("Processing alarm job event: attempt={}", attempt)
 
         val parsedPayload: AlarmJobPayload
@@ -162,7 +168,7 @@ class KafkaAlarmJobConsumer(
         // 4. 비동기 리액티브 파이프라인 연동 (Non-blocking 토큰 획득 -> 발송 -> boundedElastic 스케줄러 전환 -> 결과 저장)
         val future = acquireTokenReactive()
             .then(Mono.defer {
-                notificationPort.sendNotification(listOf(batchItem))
+                notificationPort.sendNotification(batchItem)
             })
             .publishOn(Schedulers.boundedElastic()) // 블로킹 RDB I/O 격리
             .then(Mono.defer {
@@ -175,7 +181,7 @@ class KafkaAlarmJobConsumer(
                 }
 
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
-                    alarmId = alarmIdLong.toString(),
+                    alarmId = alarmIdLong,
                     status = "SUCCESS",
                     requestId = requestId,
                     traceId = parsedPayload.traceId,
@@ -194,7 +200,11 @@ class KafkaAlarmJobConsumer(
                 val elapsedTime = System.currentTimeMillis() - startTime
                 // 리액터 스레드 임시 MDC 로깅 설정
                 MDC.put("requestId", requestId)
-                logger.error("Failed to execute API call for alarm: alarmId = {}", alarmIdLong, e)
+                if (e is CircuitBreakerOpenException) {
+                    logger.warn("Failed to execute API call for alarm: alarmId = {} - Circuit breaker is OPEN", alarmIdLong)
+                } else {
+                    logger.error("Failed to execute API call for alarm: alarmId = {}", alarmIdLong, e)
+                }
                 MDC.clear()
 
                 // 실패 시 락을 해제하여 다음 재시도를 가능하게 함
@@ -223,7 +233,7 @@ class KafkaAlarmJobConsumer(
                 }
                 
                 alarmExecutionLogRepositoryPort.save(AlarmExecutionLog.record(
-                    alarmId = alarmIdLong.toString(),
+                    alarmId = alarmIdLong,
                     status = logStatus,
                     errorMessage = e.message,
                     requestId = requestId,

@@ -9,6 +9,8 @@ import com.alarm.domain.AlarmOutboxEvent
  * [관점] Outbound Port: Outbox 폴러(OutboxEventPublisher)가 Kafka 브로커로 이벤트를 발행할 때 사용하는 포트 계약입니다.
  *        AlarmService는 Outbox 테이블에만 저장하며 이 포트를 직접 호출하지 않습니다(이중 쓰기 방지).
  */
+import java.util.concurrent.CompletableFuture
+
 interface MessageQueuePort {
-    fun publishAlarmJobFromOutbox(event: AlarmOutboxEvent)
+    fun publishAlarmJobFromOutbox(event: AlarmOutboxEvent): CompletableFuture<out Any>
 }

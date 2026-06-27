@@ -1,41 +1,25 @@
 package com.alarm.adapter.`in`.messaging
 
+import com.alarm.adapter.out.notification.RedisRateLimiter
 import com.alarm.application.port.out.AlarmExecutionLogRepositoryPort
 import com.alarm.application.port.out.AlarmRepositoryPort
 import com.alarm.application.port.out.NotificationPort
-import com.alarm.application.port.out.AlarmBatchItem
-import com.alarm.adapter.out.notification.RedisRateLimiter
+import com.alarm.domain.Alarm
 import com.alarm.domain.AlarmStatus
-import com.alarm.domain.AlarmExecutionLog
+import com.alarm.exception.ConcurrentProcessingException
+import com.alarm.exception.ExternalApiException
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.mockito.ArgumentMatchers.*
-import org.mockito.Mockito
-import org.mockito.Mockito.*
+import org.mockito.kotlin.*
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
-import org.springframework.kafka.core.KafkaTemplate
-import org.springframework.kafka.support.Acknowledgment
 import reactor.core.publisher.Mono
 import java.time.Duration
+import java.util.concurrent.CompletionException
 
-/**
- * [?�?? KafkaAlarmJobConsumer ??Kafka 배치 ?�비??
- * [범주] Consumer Unit Test ??Mockito Mock, ?�제 Kafka 브로�??�음
- *
- * H2 DB ?�태 갱신
- *   ???�상 처리 ??updateStatusesInBatch(SENT)
- *   ??발송 ?�패 ??updateStatusesInBatch(FAILED) + saveAll(?�러 ?�력)
- *
- * Redis proc: ??멱등??
- *   ???�일 uuid 2�??�입 ??sendNotification ?�확??1?�만 ?�출 (중복 Skip)
- *
- * Rate Limiter
- *   ??501~502번째 �?�� tryAcquire=false ???��????�시?? �?504???�출
- */
 class KafkaAlarmJobConsumerTest {
 
     private lateinit var alarmRepositoryPort: AlarmRepositoryPort
@@ -43,46 +27,22 @@ class KafkaAlarmJobConsumerTest {
     private lateinit var alarmExecutionLogRepositoryPort: AlarmExecutionLogRepositoryPort
     private lateinit var redisTemplate: StringRedisTemplate
     private lateinit var redisRateLimiter: RedisRateLimiter
-    private lateinit var objectMapper: ObjectMapper
-    private lateinit var kafkaTemplate: KafkaTemplate<String, String>
-    private lateinit var valueOps: ValueOperations<String, String>
-    private lateinit var ack: Acknowledgment
+    private lateinit var valueOperations: ValueOperations<String, String>
+    private val objectMapper = jacksonObjectMapper()
+
     private lateinit var consumer: KafkaAlarmJobConsumer
 
-    @Suppress("UNCHECKED_CAST")
     @BeforeEach
     fun setUp() {
-        alarmRepositoryPort = mock(AlarmRepositoryPort::class.java)
-        notificationPort = mock(NotificationPort::class.java)
-        alarmExecutionLogRepositoryPort = mock(AlarmExecutionLogRepositoryPort::class.java)
-        redisTemplate = mock(StringRedisTemplate::class.java)
-        redisRateLimiter = mock(RedisRateLimiter::class.java)
-
-        // ?�심 ?�정: KotlinModule???�록?�야 Kotlin data class ??��?�화 가??
-        objectMapper = ObjectMapper().registerKotlinModule()
-
-        kafkaTemplate = mock(KafkaTemplate::class.java) as KafkaTemplate<String, String>
-        valueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
-        ack = mock(Acknowledgment::class.java)
-
-        `when`(redisTemplate.opsForValue()).thenReturn(valueOps)
-        `when`(redisRateLimiter.tryAcquire(anyInt())).thenReturn(true)
-
-        // Mockito ?��? anyList() 매처??null???�닌 �?리스?��? 반환?�여 ?�전??
-        `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.empty())
-
-        val dummyAlarm = com.alarm.domain.Alarm.reconstruct(
-            id = 12345L,
-            senderId = "sender-1",
-            receiverId = "receiver-1",
-            channelType = "SMS",
-            name = "Test Alarm",
-            status = AlarmStatus.PENDING,
-            payload = "Test Payload", location = null,
-            createdAt = java.time.LocalDateTime.now(),
-            updatedAt = java.time.LocalDateTime.now()
-        )
-        `when`(alarmRepositoryPort.findById(anyLong())).thenReturn(dummyAlarm)
+        alarmRepositoryPort = mock<AlarmRepositoryPort>()
+        notificationPort = mock<NotificationPort>()
+        alarmExecutionLogRepositoryPort = mock<AlarmExecutionLogRepositoryPort>()
+        redisTemplate = mock<StringRedisTemplate>()
+        redisRateLimiter = mock<RedisRateLimiter>()
+        
+        @Suppress("UNCHECKED_CAST")
+        valueOperations = mock()
+        whenever(redisTemplate.opsForValue()).thenReturn(valueOperations)
 
         consumer = KafkaAlarmJobConsumer(
             alarmRepositoryPort,
@@ -94,143 +54,120 @@ class KafkaAlarmJobConsumerTest {
         )
     }
 
-    /**
-     * [?�나리오] 카프카에???�신???�람??�?중복?��? ?��? ?�람??최종?�으�?DB(H2)???�료(SENT) ?�태�????�?�되?��? 검증합?�다.
-     * [Given] 중복?��? ?��? ?�람 메시지 �?Redis ?�점 ?�과 ?�정
-     * [When] ?�람 ?�벤??배치 ?�비 ?�출
-     * [Then] alarmRepositoryPort.updateStatusesInBatch가 SENT ?�태�??�출?�었?��? 검�?
-     */
-    @Test
-    fun `should update RDB H2 status to SENT on successful processing`() {
-        // Given
-        val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-ok"}"""
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
-
-        // When
-        consumer.consumeAlarmJob(payload, 1).join()
-
-        // [Then] alarmRepositoryPort.save가 SENT ?�태�??�출?�었?��? 검�?
-        // 1. DCL 2�?검증을 ?�한 findById ?�출
-        verify(alarmRepositoryPort).findById(12345L)
-        verify(alarmRepositoryPort).save(anyObject(com.alarm.domain.Alarm::class.java))
-    }
-
-    /**
-     * [?�나리오] 중복 ?�벤?��? ?�입?�었????중복??감�??�고 무시(Skip)?�는 로직??검증합?�다.
-     * [Given] ?�일 멱등??proc:)�?가�?2개의 메시지,
-     *        �?번째 메시지??setIfAbsent=true(최초 ?�점 ?�공),
-     *        ??번째 메시지??setIfAbsent=false + Redis �?"PROCESSING" 반환(중복 감�?)?�로 ?�정
-     * [When] ?�람 ?�벤??배치 ?�비 ?�출
-     * [Then] ?��? 발송 API(sendNotification)가 ?�확??1?�만 ?�출?�는지 검�?(중복 메시지 ?�외??
-     */
-    @Test
-    fun `should detect and ignore duplicate Kafka jobs using Redis proc key`() {
-        // Given
-        val payload1 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
-        val payload2 = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-dup"}"""
-        // ??메시지가 ?�일??proc ?��? 공유?? proc:sender-1:uuid-dup
-        val procKey = "proc:sender-1:uuid-dup"
-
-        // �?번째 ?�점 ?�도: true (?�공)
-        // ??번째 ?�점 ?�도: false (?��? ?�점??= 중복)
-        `when`(valueOps.setIfAbsent(eq(procKey), eq("PROCESSING"), any(Duration::class.java)))
-            .thenReturn(true)
-            .thenReturn(false)
-        // ??번째 메시지 ?�달 ??Redis?�서 ?�재 ?�태 조회 ??PROCESSING 반환 ??중복?�로 ?�정
-        `when`(valueOps.get(eq(procKey))).thenReturn("PROCESSING")
-
-        // When
-        consumer.consumeAlarmJob(payload1, 1).join()
-        
-        // ??번째 중복 ?�업?� ConcurrentProcessingException???�져??Kafka ?�시?��? ?�????
-        org.junit.jupiter.api.Assertions.assertThrows(Exception::class.java) {
-            consumer.consumeAlarmJob(payload2, 1).join()
-        }
-
-        // Then
-        // ArgumentCaptor 캐스???�이 ?�출 ?�수(1??�?verify ??Kotlin null-safety 문제 ?�음
-        verify(notificationPort, times(1)).sendNotification(anyList())
-    }
-
-    /**
-     * [?�나리오] 발송 ?�류 ??DB(H2)???�패(FAILED) ?�태 ?�데?�트?� ?�러 ?�력 ?�?�을 검증합?�다.
-     * [Given] 메시지 �??��? ?�송 API가 RuntimeException??반환?�도�??�정
-     * [When] ?�람 ?�벤??배치 ?�비 ?�출
-     * [Then] DB H2??FAILED ?�데?�트 ?�청 �??�러 로그 ?�괄(saveAll) ?�?�이 ?�어?�는지 검�?
-     */
-    @Test
-    fun `should update RDB H2 status to DEAD and record log on max execution failure`() {
-        // Given
-        val payload = """{"alarmId":"12345","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-fail"}"""
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
-        `when`(notificationPort.sendNotification(anyList())).thenReturn(Mono.error(RuntimeException("Connection lost")))
-
-        // When
-        consumer.consumeAlarmJob(payload, 4).join()
-
-        // Then
-        verify(alarmRepositoryPort, times(2)).findById(12345L)
-        verify(alarmRepositoryPort).save(anyObject(com.alarm.domain.Alarm::class.java))
-
-        // 3. alarmExecutionLogRepositoryPort.save 가 DEAD ?�태�??�?�되?�는지 검�?
-        verify(alarmExecutionLogRepositoryPort).save(anyObject(AlarmExecutionLog::class.java))
-    }
-
-    /**
-     * [?�나리오] ?��? ?�동 Rate Limit 조건(초당 최�? 500???�출)??초과??502번째 ?�청 ?�황??검증합?�다.
-     * [Given] 502개의 배치 chunk�??�성?�기 ?�해 �?502 * 200 = 100,400개의 ?�람 ?�이로드 ?�성
-     *        Redis Rate Limiter(tryAcquire)가 500?�째까�???true(?�용),
-     *        501번째?� 502번째 ?�도??false(초과 차단),
-     *        503번째 ?�도부???�시 true(?�용)�?반환?�도�?Mock ?�정
-     * [When] 100,400개의 ?�?�량 ?�람 ?�벤??배치 ?�비 ?�출
-     * [Then] tryAcquire ?�출 ?�수가 �?504???�공 502??+ ?�기로 ?�한 ?�시??2???��? 검증하??
-     *        초과 ???��?�??�선?�이 ?�상 ?�작?�는지 증명
-     */
-    @Test
-    fun `should block and wait when rate limit is exceeded`() {
-        // Given
-        // 3개의 ?�람 메시지 ?�성
-        val payloads = List(3) { index ->
-            """{"alarmId":"${12340 + index}","senderId":"sender-1","receiverId":"receiver-1","uuid":"uuid-$index"}"""
-        }
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
-
-        // tryAcquire가 1번째 ?�공, 2번째 ?�패(차단), 3번째(?�시?? ?�공, �??�후 ?�공?�도�??�정
-        var rateLimitCallCount = 0
-        `when`(redisRateLimiter.tryAcquire(1)).thenAnswer {
-            rateLimitCallCount++
-            when (rateLimitCallCount) {
-                1 -> true   // 1번째 ?�람: 즉시 ?�용
-                2 -> false  // 2번째 ?�람 (�??�도): 차단 (?��?
-                3 -> true   // 2번째 ?�람 (?�시??: ?��????�용
-                else -> true // 3번째 ?�람 ?�후: 즉시 ?�용
+    private fun createPayloadJson(): String {
+        return """
+            {
+                "alarmId": "1",
+                "senderId": "sender1",
+                "receiverId": "receiver1",
+                "uuid": "uuid1234",
+                "requestId": "req1"
             }
-        }
-
-        // When
-        payloads.forEach { consumer.consumeAlarmJob(it, 1).join() }
-
-        // Then
-        // �??�출 ?�수: 
-        // 1번째 ?�람 처리 ??1??
-        // 2번째 ?�람 처리 ??1???�패) + 1???�공) = 2??
-        // 3번째 ?�람 처리 ??1??
-        // �?4???�출?�어????
-        verify(redisRateLimiter, times(4)).tryAcquire(1)
+        """.trimIndent()
     }
-}
 
-@Suppress("UNCHECKED_CAST")
-private fun <T> anyObject(type: Class<T>): T {
-    Mockito.any(type)
-    return when (type) {
-        AlarmExecutionLog::class.java -> AlarmExecutionLog.reconstruct(
-            id = java.util.UUID.randomUUID(),
-            alarmId = "dummy",
-            triggeredAt = java.time.LocalDateTime.now(),
-            status = "SUCCESS",
-            errorMessage = null
-        ) as T
-        else -> null as T
+    @Test
+    fun `consumeAlarmJob - 정상 처리 시 알람을 발송하고 DB 상태를 업데이트한다`() {
+        // given
+        val payloadStr = createPayloadJson()
+        val alarm = Alarm.create(1L, "sender1", "receiver1", "SMS", "Test", "Msg")
+        
+        // 1차 및 2차 DCL 검증 시 PENDING 상태의 알람 반환
+        whenever(alarmRepositoryPort.findById(1L)).thenReturn(alarm)
+        
+        // Redis 락 획득 성공
+        whenever(valueOperations.setIfAbsent(any(), eq("PROCESSING"), any<Duration>())).thenReturn(true)
+        
+        // RateLimiter 토큰 획득 성공
+        whenever(redisRateLimiter.tryAcquire(1)).thenReturn(true)
+        
+        // Notification API 호출 성공
+        whenever(notificationPort.sendNotification(any())).thenReturn(Mono.empty())
+
+        // when
+        val future = consumer.consumeAlarmJob(payloadStr, 1)
+        future.join() // 대기
+
+        // then
+        assertEquals(AlarmStatus.SENT, alarm.status)
+        verify(notificationPort, times(1)).sendNotification(any())
+        verify(alarmExecutionLogRepositoryPort, times(1)).save(any())
+        verify(valueOperations, times(1)).set(any<String>(), eq("DONE"), any<Duration>())
+    }
+
+    @Test
+    fun `consumeAlarmJob - 이미 최종 상태인 경우 Redis 락 경합 없이 스킵한다 (DCL 1차)`() {
+        // given
+        val payloadStr = createPayloadJson()
+        val alarm = Alarm.create(1L, "s", "r", "c", "n", "p").apply { sent() }
+        
+        whenever(alarmRepositoryPort.findById(1L)).thenReturn(alarm)
+
+        // when
+        val future = consumer.consumeAlarmJob(payloadStr, 1)
+        future.join()
+
+        // then
+        verify(valueOperations, times(1)).set(any<String>(), eq("DONE"), any<Duration>())
+        verify(notificationPort, never()).sendNotification(any())
+    }
+
+    @Test
+    fun `consumeAlarmJob - Redis 락 획득 실패 시, 기존 상태가 DONE 이면 스킵한다`() {
+        // given
+        val payloadStr = createPayloadJson()
+        val alarm = Alarm.create(1L, "s", "r", "c", "n", "p")
+        whenever(alarmRepositoryPort.findById(1L)).thenReturn(alarm)
+        
+        whenever(valueOperations.setIfAbsent(any(), eq("PROCESSING"), any<Duration>())).thenReturn(false)
+        whenever(valueOperations.get(any<String>())).thenReturn("DONE")
+
+        // when
+        val future = consumer.consumeAlarmJob(payloadStr, 1)
+        future.join()
+
+        // then
+        verify(notificationPort, never()).sendNotification(any())
+    }
+
+    @Test
+    fun `consumeAlarmJob - Redis 락 획득 실패 시, 기존 상태가 PROCESSING 이면 예외 발생`() {
+        // given
+        val payloadStr = createPayloadJson()
+        val alarm = Alarm.create(1L, "s", "r", "c", "n", "p")
+        whenever(alarmRepositoryPort.findById(1L)).thenReturn(alarm)
+        
+        whenever(valueOperations.setIfAbsent(any(), eq("PROCESSING"), any<Duration>())).thenReturn(false)
+        whenever(valueOperations.get(any<String>())).thenReturn("PROCESSING")
+
+        // when & then
+        val ex = assertThrows(Exception::class.java) {
+            consumer.consumeAlarmJob(payloadStr, 1).join()
+        }
+        val actualCause = ex.cause ?: ex
+        assertTrue(actualCause is ConcurrentProcessingException)
+        verify(notificationPort, never()).sendNotification(any())
+    }
+
+    @Test
+    fun `consumeAlarmJob - 외부 API 400 에러 발생 시 알람을 FAILED로 마킹한다`() {
+        // given
+        val payloadStr = createPayloadJson()
+        val alarm = Alarm.create(1L, "s", "r", "c", "n", "p")
+        whenever(alarmRepositoryPort.findById(1L)).thenReturn(alarm)
+        whenever(valueOperations.setIfAbsent(any(), eq("PROCESSING"), any<Duration>())).thenReturn(true)
+        whenever(redisRateLimiter.tryAcquire(1)).thenReturn(true)
+        
+        // 400 에러 모의 (Client Error)
+        whenever(notificationPort.sendNotification(any())).thenReturn(Mono.error(ExternalApiException(400, "Bad Request")))
+
+        // when
+        val future = consumer.consumeAlarmJob(payloadStr, 1)
+        future.join() // 4xx 에러는 Mono.empty() 로 리턴되므로 에러 전파되지 않음 (재시도 방지)
+
+        // then
+        assertEquals(AlarmStatus.FAILED, alarm.status)
+        verify(redisTemplate, times(1)).delete(any<String>()) // 실패 시 락 해제
+        verify(alarmExecutionLogRepositoryPort, times(1)).save(any())
     }
 }

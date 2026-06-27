@@ -1,0 +1,158 @@
+{
+  "info": {
+    "_postman_id": "9d0f82b6-9cc9-4ec6-9c4e-0f2b96c8f2d1",
+    "name": "Mock Send API Collection",
+    "description": "Spring Boot Mock Send API 테스트용 컬렉션",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    }
+  ],
+  "item": [
+    {
+      "name": "1) Mock Send - Normal",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"requestId\": \"req-20260217-001\",\n  \"channelType\": \"SMS\",\n  \"receiver\": \"01012345678\",\n  \"message\": \"테스트 메시지입니다.\",\n  \"metadata\": {\n    \"templateId\": \"TMP-001\",\n    \"campaignId\": \"CAMP-01\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/mock/send",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "mock",
+            "send"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is one of expected', function () {",
+              "  pm.expect([200, 429, 500, 503]).to.include(pm.response.code);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test('has result', function () {",
+              "  pm.expect(body).to.have.property('result');",
+              "});",
+              "",
+              "pm.test('requestId echoed when available', function () {",
+              "  if (body.requestId) {",
+              "    pm.expect(body.requestId).to.eql('req-20260217-001');",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2) Mock Send - Validation Error (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"requestId\": \"\",\n  \"channelType\": \"SMS\",\n  \"receiver\": \"\",\n  \"message\": \"\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/mock/send",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "mock",
+            "send"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 400', function () {",
+              "  pm.response.to.have.status(400);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test('fail response shape', function () {",
+              "  pm.expect(body.result).to.eql('FAIL');",
+              "  pm.expect(body).to.have.property('errorCode');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3) Mock Send - Unknown Channel (UNKNOWN 허용)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"requestId\": \"req-20260217-unknown\",\n  \"channelType\": \"PUSH\",\n  \"receiver\": \"user-123\",\n  \"message\": \"unknown channel 테스트\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/mock/send",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "mock",
+            "send"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is one of expected', function () {",
+              "  pm.expect([200, 429, 500, 503]).to.include(pm.response.code);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test('channelType exists', function () {",
+              "  pm.expect(body).to.have.property('channelType');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

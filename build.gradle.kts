@@ -30,8 +30,8 @@ dependencies {
 	implementation("com.github.f4b6a3:uuid-creator:5.3.3")
 	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.16")
 	implementation("org.springframework.kafka:spring-kafka")
-	runtimeOnly("com.mysql:mysql-connector-j")
-	runtimeOnly("com.h2database:h2")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
+	runtimeOnly("org.postgresql:postgresql")
 	implementation("org.springframework.boot:spring-boot-starter-webflux")
 
 	// Observability (Metrics, Tracing, Logs)
@@ -44,14 +44,19 @@ dependencies {
 	// Resilience4j (Circuit Breaker)
 	implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
 	implementation("io.github.resilience4j:resilience4j-micrometer:2.2.0")
+	implementation("io.github.resilience4j:resilience4j-reactor:2.2.0")
 
 	// UUIDv7 Generator
 	implementation("com.fasterxml.uuid:java-uuid-generator:5.1.0")
 
+	// ShedLock (Scheduler Distributed Lock)
+	implementation("net.javacrumbs.shedlock:shedlock-spring:5.13.0")
+	implementation("net.javacrumbs.shedlock:shedlock-provider-jdbc-template:5.13.0")
+
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testImplementation("org.springframework.kafka:spring-kafka-test")
-	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+	testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
 }
 
 kotlin {

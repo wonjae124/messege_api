@@ -4,6 +4,10 @@ import com.alarm.domain.Alarm
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 
+import com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse
+import java.time.LocalDateTime
+import com.alarm.domain.AlarmStatus
+
 /**
  * [파일명] GetAlarmQuery.kt
  * [수정일자] 2026-06-11
@@ -13,4 +17,12 @@ import org.springframework.data.domain.Pageable
 interface GetAlarmQuery {
     fun getAlarm(id: String): Alarm
     fun listAlarms(pageable: Pageable): Page<Alarm>
+    fun getAlarmHistory(
+        senderId: String?,
+        receiverId: String?,
+        status: AlarmStatus?,
+        cursorCreatedAt: LocalDateTime?,
+        cursorId: Long?,
+        limit: Int
+    ): AlarmHistoryResponse
 }

@@ -8,7 +8,7 @@ object SnowflakeIdGenerator {
     private const val MAX_NODE_ID = (1 shl NODE_ID_BITS) - 1
     private const val MAX_SEQUENCE = (1 shl SEQUENCE_BITS) - 1
 
-    private val nodeId = (System.getenv("NODE_ID")?.toLongOrNull() ?: 1L) and MAX_NODE_ID.toLong()
+    private val nodeId = System.getenv("NODE_ID")?.toLongOrNull()?.also { require(it in 0..MAX_NODE_ID) } ?: throw IllegalStateException("NODE_ID environment variable is required and must be between 0 and ${MAX_NODE_ID}")
 
     private var lastTimestamp = -1L
     private var sequence = 0L

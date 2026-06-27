@@ -1,0 +1,38 @@
+﻿[
+    {
+        "Name":  "A-Tuned",
+        "RPS":  100,
+        "Duration":  "20s",
+        "ReqCount":  2001,
+        "ActualTPS":  100.0,
+        "AvgRes":  9.54,
+        "P95Res":  0,
+        "FailCount":  0,
+        "CBBlocked":  0,
+        "DrainTime":  0
+    },
+    {
+        "Name":  "B-Tuned",
+        "RPS":  300,
+        "Duration":  "20s",
+        "ReqCount":  6001,
+        "ActualTPS":  293.4,
+        "AvgRes":  253.37,
+        "P95Res":  0,
+        "FailCount":  0,
+        "CBBlocked":  0,
+        "DrainTime":  0
+    },
+    {
+        "Name":  "C-Tuned",
+        "RPS":  500,
+        "Duration":  "20s",
+        "ReqCount":  10020,
+        "ActualTPS":  478.6,
+        "AvgRes":  53.19,
+        "P95Res":  0,
+        "FailCount":  0,
+        "CBBlocked":  0,
+        "DrainTime":  0
+    }
+]

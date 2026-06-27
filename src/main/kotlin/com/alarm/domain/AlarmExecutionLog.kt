@@ -11,7 +11,7 @@ import java.util.UUID
  */
 class AlarmExecutionLog private constructor(
     val id: UUID,
-    val alarmId: String,
+    val alarmId: Long,
     val triggeredAt: LocalDateTime,
     val status: String, // SUCCESS, FAILED
     val errorMessage: String?,
@@ -29,7 +29,7 @@ class AlarmExecutionLog private constructor(
     companion object {
         @JvmOverloads
         fun record(
-            alarmId: String,
+            alarmId: Long,
             status: String,
             errorMessage: String? = null,
             requestId: String = org.slf4j.MDC.get("requestId") ?: "unknown",
@@ -65,7 +65,7 @@ class AlarmExecutionLog private constructor(
         @JvmOverloads
         fun reconstruct(
             id: UUID,
-            alarmId: String,
+            alarmId: Long,
             triggeredAt: LocalDateTime,
             status: String,
             errorMessage: String?,

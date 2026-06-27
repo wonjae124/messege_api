@@ -18,6 +18,8 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Duration
+import com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse
+import java.time.LocalDateTime
 
 /**
  * [파일명] AlarmService.kt
@@ -95,6 +97,34 @@ class AlarmService(
 
     override fun listAlarms(pageable: Pageable): Page<Alarm> {
         return alarmRepositoryPort.findAll(pageable)
+    }
+
+    override fun getAlarmHistory(
+        senderId: String?,
+        receiverId: String?,
+        status: AlarmStatus?,
+        cursorCreatedAt: LocalDateTime?,
+        cursorId: Long?,
+        limit: Int
+    ): AlarmHistoryResponse {
+        val cutoffDate = LocalDateTime.now().minusDays(7)
+            // limit + 1개를 조회하여 hasNext 여부를 확인합니다.
+        val alarms = alarmRepositoryPort.findHistoryByCursor(
+            senderId, receiverId, status, cutoffDate, cursorCreatedAt, cursorId, limit + 1
+        )
+        
+        val hasNext = alarms.size > limit
+        val resultAlarms = if (hasNext) alarms.take(limit) else alarms
+        
+        val nextCursorCreatedAt = resultAlarms.lastOrNull()?.createdAt
+        val nextCursorId = resultAlarms.lastOrNull()?.id
+        
+        return com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse(
+            alarms = resultAlarms.map { com.alarm.adapter.`in`.web.dto.AlarmResponse.fromDomain(it) },
+            nextCursorCreatedAt = nextCursorCreatedAt,
+            nextCursorId = nextCursorId,
+            hasNext = hasNext
+        )
     }
 
     @Transactional

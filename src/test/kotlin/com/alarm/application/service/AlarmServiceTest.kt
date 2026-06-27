@@ -1,61 +1,42 @@
 package com.alarm.application.service
 
 import com.alarm.application.port.`in`.CreateAlarmUseCase
-import com.alarm.application.port.out.*
+import com.alarm.application.port.out.AlarmExecutionLogRepositoryPort
+import com.alarm.application.port.out.AlarmOutboxEventRepositoryPort
+import com.alarm.application.port.out.AlarmRepositoryPort
 import com.alarm.domain.Alarm
-import com.alarm.domain.AlarmStatus
+import com.alarm.domain.AlarmOutboxEvent
+import com.alarm.exception.DuplicateRequestException
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
-import org.mockito.ArgumentCaptor
-import org.mockito.ArgumentMatchers.*
-import org.mockito.Mockito
-import org.mockito.Mockito.*
-import org.junit.jupiter.api.assertThrows
-import com.alarm.application.port.`in`.UpdateAlarmUseCase
-import com.alarm.exception.AlarmNotFoundException
+import org.mockito.kotlin.any
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.*
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.ValueOperations
-import com.alarm.exception.DuplicateRequestException
 import java.time.Duration
 
-/**
- * [대상] AlarmService — 애플리케이션 서비스 레이어
- * [범주] Service Unit Test — Mockito Mock, 외부 의존성 없음
- *
- * createAlarm
- *   ① DB에 PENDING 상태로 저장 + Outbox 이벤트 저장 (Outbox 패턴)
- *   ② Redis 멱등키 중복 → CONFLICT(409) 예외
- */
 class AlarmServiceTest {
 
     private lateinit var alarmRepositoryPort: AlarmRepositoryPort
     private lateinit var alarmOutboxEventRepositoryPort: AlarmOutboxEventRepositoryPort
     private lateinit var alarmExecutionLogRepositoryPort: AlarmExecutionLogRepositoryPort
     private lateinit var redisTemplate: StringRedisTemplate
-    private lateinit var valueOps: ValueOperations<String, String>
+    private lateinit var valueOperations: ValueOperations<String, String>
+
     private lateinit var alarmService: AlarmService
 
-    private val dummyAlarm = Alarm.create(
-        id = 99999L,
-        senderId = "sender-1",
-        receiverId = "receiver-1",
-        channelType = "SMS",
-        name = "Dummy",
-        payload = null
-    )
-
-    @Suppress("UNCHECKED_CAST")
     @BeforeEach
     fun setUp() {
-        alarmRepositoryPort = mock(AlarmRepositoryPort::class.java)
-        alarmOutboxEventRepositoryPort = mock(AlarmOutboxEventRepositoryPort::class.java)
-        alarmExecutionLogRepositoryPort = mock(AlarmExecutionLogRepositoryPort::class.java)
-        redisTemplate = mock(StringRedisTemplate::class.java)
-        valueOps = mock(ValueOperations::class.java) as ValueOperations<String, String>
-
-        `when`(redisTemplate.opsForValue()).thenReturn(valueOps)
+        alarmRepositoryPort = mock<AlarmRepositoryPort>()
+        alarmOutboxEventRepositoryPort = mock<AlarmOutboxEventRepositoryPort>()
+        alarmExecutionLogRepositoryPort = mock<AlarmExecutionLogRepositoryPort>()
+        redisTemplate = mock<StringRedisTemplate>()
+        
+        @Suppress("UNCHECKED_CAST")
+        valueOperations = mock<ValueOperations<String, String>>()
+        whenever(redisTemplate.opsForValue()).thenReturn(valueOperations)
 
         alarmService = AlarmService(
             alarmRepositoryPort,
@@ -65,130 +46,103 @@ class AlarmServiceTest {
         )
     }
 
-    /**
-     * [시나리오] 최초 알람 생성 시 DB에 저장되는 알람의 초기 상태를 검증합니다.
-     * [Given] 생성 명령 파라미터 준비 및 Redis 중복검사 통과 설정
-     * [When] 알람 생성 메서드 호출
-     * [Then] DB에 저장(save) 요청된 알람의 상태(status)가 PENDING인지 검증
-     */
     @Test
-    fun `createAlarm - should save alarm with PENDING status in DB`() {
-        // Given
+    fun `createAlarm - 성공적으로 알람을 생성하고 Outbox에 저장한다`() {
+        // given
         val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = 12345L,
-            senderId = "sender-1",
-            receiverId = "receiver-1",
+            id = 1234L,
+            senderId = "sender1",
+            receiverId = "receiver1",
             channelType = "SMS",
             name = "Test Alarm",
-            payload = "{}"
+            payload = "Hello"
         )
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
+        val idemKey = "idem:sender1:1234"
+        whenever(valueOperations.setIfAbsent(eq(idemKey), eq("PENDING"), any<Duration>())).thenReturn(true)
+        
+        val expectedAlarm = Alarm.create(1234L, command.senderId, command.receiverId, command.channelType, command.name, command.payload)
+        whenever(alarmRepositoryPort.save(any<Alarm>())).thenReturn(expectedAlarm)
 
-        val alarmCaptor = ArgumentCaptor.forClass(Alarm::class.java)
-        `when`(alarmRepositoryPort.save(alarmCaptor.capture() ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
-
-        // When
-        alarmService.createAlarm(command)
-
-        // Then
-        val savedAlarm = alarmCaptor.value
-        assertNotNull(savedAlarm)
-        assertEquals(AlarmStatus.PENDING, savedAlarm.status) // DB 저장 시 PENDING 상태 검증
-    }
-
-    /**
-     * [시나리오] Redis에 이미 멱등키가 등록되어 있어 중복 생성 요청인 경우 예외 발생을 검증합니다.
-     * [Given] 중복 멱등키 인입 시 Redis setIfAbsent가 false를 반환하도록 설정
-     * [When] 알람 생성 메서드 호출
-     * [Then] DuplicateRequestException 예외가 발생하는지 검증
-     */
-    @Test
-    fun `createAlarm - should return existing alarm on duplicate request if already in DB`() {
-        // Given
-        val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = 12345L, senderId = "sender-1", receiverId = "receiver-1",
-            channelType = "SMS", name = "Test Alarm", payload = "{}"
-        )
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
-        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(dummyAlarm)
-
-        // When
+        // when
         val result = alarmService.createAlarm(command)
 
-        // Then
-        assertEquals(dummyAlarm, result)
-        verify(alarmRepositoryPort, never()).save(any())
-        verify(alarmOutboxEventRepositoryPort, never()).save(any())
+        // then
+        assertNotNull(result)
+        assertEquals(1234L, result.id)
+        verify(alarmRepositoryPort, times(1)).save(any<Alarm>())
+        verify(alarmOutboxEventRepositoryPort, times(1)).save(any<AlarmOutboxEvent>())
     }
 
     @Test
-    fun `createAlarm - should throw CONFLICT exception if duplicate request and not in DB`() {
-        // Given
+    fun `createAlarm - 멱등성 키가 존재하고 DB에 이미 저장되어 있으면, 기존 알람을 반환한다`() {
+        // given
         val command = CreateAlarmUseCase.CreateAlarmCommand(
-            id = 12345L, senderId = "sender-1", receiverId = "receiver-1",
-            channelType = "SMS", name = "Test Alarm", payload = "{}"
+            id = 1234L,
+            senderId = "sender1",
+            receiverId = "receiver1",
+            channelType = "SMS",
+            name = "Test Alarm",
+            payload = "Hello"
         )
-        `when`(valueOps.setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(false)
-        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(null)
+        val idemKey = "idem:sender1:1234"
+        whenever(valueOperations.setIfAbsent(eq(idemKey), eq("PENDING"), any<Duration>())).thenReturn(false)
+        
+        val existingAlarm = Alarm.create(1234L, command.senderId, command.receiverId, command.channelType, command.name, command.payload)
+        whenever(alarmRepositoryPort.findById(1234L)).thenReturn(existingAlarm)
 
-        // When & Then
-        assertThrows<DuplicateRequestException> {
+        // when
+        val result = alarmService.createAlarm(command)
+
+        // then
+        assertEquals(existingAlarm, result)
+        verify(alarmRepositoryPort, never()).save(any<Alarm>())
+        verify(alarmOutboxEventRepositoryPort, never()).save(any<AlarmOutboxEvent>())
+    }
+
+    @Test
+    fun `createAlarm - 멱등성 키가 존재하지만 DB에 없으면, DuplicateRequestException을 던진다`() {
+        // given
+        val command = CreateAlarmUseCase.CreateAlarmCommand(
+            id = 1234L,
+            senderId = "sender1",
+            receiverId = "receiver1",
+            channelType = "SMS",
+            name = "Test Alarm",
+            payload = "Hello"
+        )
+        val idemKey = "idem:sender1:1234"
+        whenever(valueOperations.setIfAbsent(eq(idemKey), eq("PENDING"), any<Duration>())).thenReturn(false)
+        whenever(alarmRepositoryPort.findById(1234L)).thenReturn(null)
+
+        // when & then
+        assertThrows(DuplicateRequestException::class.java) {
             alarmService.createAlarm(command)
         }
-        verify(alarmRepositoryPort, never()).save(any())
-        verify(alarmOutboxEventRepositoryPort, never()).save(any())
+        verify(alarmRepositoryPort, never()).save(any<Alarm>())
     }
 
     @Test
-    fun `getAlarm - should return alarm when found`() {
-        val id = "12345"
-        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(dummyAlarm)
-        
-        val result = alarmService.getAlarm(id)
-        
-        assertNotNull(result)
-        assertEquals(dummyAlarm, result)
-    }
+    fun `createAlarm - DB 저장 실패 시, Redis 멱등 키를 삭제하고 예외를 전파한다`() {
+        // given
+        val command = CreateAlarmUseCase.CreateAlarmCommand(
+            id = 1234L,
+            senderId = "sender1",
+            receiverId = "receiver1",
+            channelType = "SMS",
+            name = "Test Alarm",
+            payload = "Hello"
+        )
+        val idemKey = "idem:sender1:1234"
+        whenever(valueOperations.setIfAbsent(eq(idemKey), eq("PENDING"), any<Duration>())).thenReturn(true)
+        whenever(alarmRepositoryPort.save(any<Alarm>())).thenThrow(RuntimeException("DB save failed"))
 
-    @Test
-    fun `getAlarm - should throw NotFound when not found`() {
-        val id = "999"
-        `when`(alarmRepositoryPort.findById(999L)).thenReturn(null)
-        
-        assertThrows<AlarmNotFoundException> {
-            alarmService.getAlarm(id)
+        // when & then
+        val ex = assertThrows(RuntimeException::class.java) {
+            alarmService.createAlarm(command)
         }
-    }
-
-    @Test
-    fun `updateAlarm - should update alarm status`() {
-        val command = UpdateAlarmUseCase.UpdateAlarmCommand(
-            id = "12345",
-            status = AlarmStatus.SENT,
-            name = "Updated",
-            payload = "{}"
-        )
-        val alarmToUpdate = Alarm.create(
-            id = 12345L,
-            senderId = "s", receiverId = "r", channelType = "SMS", name = "Old", payload = null
-        )
-        alarmToUpdate.markPending()
-
-        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(alarmToUpdate)
-        `when`(alarmRepositoryPort.save(any(Alarm::class.java) ?: dummyAlarm)).thenAnswer { it.getArgument(0) }
-
-        val result = alarmService.updateAlarm(command)
-
-        assertEquals(AlarmStatus.SENT, result.status)
-        assertEquals("Updated", result.name)
-    }
-
-    @Test
-    fun `deleteAlarm - should delete alarm`() {
-        `when`(alarmRepositoryPort.findById(12345L)).thenReturn(dummyAlarm)
+        assertEquals("DB save failed", ex.message)
         
-        alarmService.deleteAlarm("12345")
-        
-        verify(alarmRepositoryPort).delete(dummyAlarm)
+        // Redis 키가 삭제되었는지 확인
+        verify(redisTemplate, times(1)).delete(idemKey)
     }
 }

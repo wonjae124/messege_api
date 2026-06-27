@@ -4,6 +4,7 @@ import com.alarm.domain.Alarm
 import com.alarm.domain.AlarmStatus
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
+import java.time.LocalDateTime
 
 /**
  * [파일명] AlarmRepositoryPort.kt
@@ -16,4 +17,13 @@ interface AlarmRepositoryPort {
     fun findById(id: Long): Alarm?
     fun findAll(pageable: Pageable): Page<Alarm>
     fun delete(alarm: Alarm)
+    fun findHistoryByCursor(
+        senderId: String?,
+        receiverId: String?,
+        status: AlarmStatus?,
+        cutoffDate: LocalDateTime,
+        cursorCreatedAt: LocalDateTime?,
+        cursorId: Long?,
+        limit: Int
+    ): List<Alarm>
 }

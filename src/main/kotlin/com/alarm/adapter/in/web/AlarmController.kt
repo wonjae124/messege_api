@@ -11,6 +11,12 @@ import org.springframework.data.domain.Pageable
 import org.springframework.data.web.PageableDefault
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.*
+import org.springframework.format.annotation.DateTimeFormat
+import java.time.LocalDateTime
+import com.alarm.config.SnowflakeIdGenerator
+import com.alarm.config.idempotencyKeyToLong
+import com.alarm.domain.AlarmStatus
+import com.alarm.adapter.`in`.web.dto.AlarmHistoryResponse
 import com.github.f4b6a3.uuid.UuidCreator
 
 /**
@@ -42,19 +48,19 @@ class AlarmController(
             if (idempotencyKey.length > 32) {
                 parsedSenderId = idempotencyKey.substring(0, idempotencyKey.length - 32)
             } else {
-                parsedSenderId = "12345"
+                parsedSenderId = request.senderId ?: throw IllegalArgumentException("senderId is required when idempotencyKey does not contain it")
             }
-            parsedId = com.alarm.config.idempotencyKeyToLong(idempotencyKey)
+            parsedId = idempotencyKeyToLong(idempotencyKey)
         } else {
-            parsedSenderId = "12345"
-            parsedId = com.alarm.config.SnowflakeIdGenerator.nextId()
+            parsedSenderId = request.senderId ?: throw IllegalArgumentException("senderId is required")
+            parsedId = SnowflakeIdGenerator.nextId()
         }
 
         val command = CreateAlarmUseCase.CreateAlarmCommand(
             id = parsedId,
             senderId = parsedSenderId,
-            receiverId = request.receiverId ?: "defaultReceiver",
-            channelType = request.channelType ?: "SMS",
+            receiverId = request.receiverId ?: throw IllegalArgumentException("receiverId is required"),
+            channelType = request.channelType ?: throw IllegalArgumentException("channelType is required"),
             name = request.name,
             payload = request.payload
         )
@@ -75,6 +81,22 @@ class AlarmController(
         @PageableDefault(page = 0, size = 10) pageable: Pageable
     ): Page<AlarmResponse> {
         return getAlarmQuery.listAlarms(pageable).map { AlarmResponse.fromDomain(it) }
+    }
+
+    @GetMapping("/notifications/history")
+    @Operation(summary = "알람 내역 조회", description = "최근 7일간의 알람 내역을 커서 기반으로 조회합니다.")
+    fun getAlarmHistory(
+        @RequestParam(required = false) senderId: String?,
+        @RequestParam(required = false) receiverId: String?,
+        @RequestParam(required = false) status: AlarmStatus?,
+        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) cursorCreatedAt: LocalDateTime?,
+        @RequestParam(required = false) cursorId: Long?,
+        @RequestParam(defaultValue = "20") limit: Int
+    ): AlarmHistoryResponse {
+        if (senderId.isNullOrBlank() && receiverId.isNullOrBlank()) {
+            throw IllegalArgumentException("senderId 또는 receiverId 중 하나는 필수입니다.")
+        }
+        return getAlarmQuery.getAlarmHistory(senderId, receiverId, status, cursorCreatedAt, cursorId, limit)
     }
 
     @PutMapping("/notifications/{id}")
